@@ -1,3 +1,4 @@
+use game_engine::VulkanRenderer;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::ElementState;
@@ -59,6 +60,7 @@ struct GameEngine {
     window_state: Option<WindowState>,
     default_window_settings: WindowSettings,
     last_frame: std::time::Instant,
+    renderer: Option<VulkanRenderer>,
 }
 
 impl GameEngine {
@@ -67,13 +69,16 @@ impl GameEngine {
             window_state: None,
             default_window_settings,
             last_frame: std::time::Instant::now(),
+            renderer: None,
         }
     }
 }
 
 impl ApplicationHandler for GameEngine {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        log::info!("Setting up window and renderer");
         self.window_state = Some(WindowState::new(event_loop, &self.default_window_settings));
+        self.renderer = Some(VulkanRenderer::new());
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
