@@ -1,10 +1,11 @@
 use ash::vk;
 use std::ffi::c_char;
 use std::ffi::CString;
+use std::sync::Arc;
 
 pub struct Instance {
-    entry: ash::Entry,
-    handle: ash::Instance,
+    pub entry: ash::Entry,
+    pub handle: ash::Instance,
 }
 
 pub struct Version {
@@ -59,7 +60,8 @@ impl Instance {
         api_version: Version,
         required_layers: &[CString],
         required_extensions: &[CString],
-    ) -> Instance {
+        debug_messenger_create_info: Option<vk::DebugUtilsMessengerCreateInfoEXT>,
+    ) -> Arc<Instance> {
         let entry = unsafe { ash::Entry::load().expect("Vulkan Drivers should be installed.") };
 
         if !check_instance_layer_support(&entry, required_layers) {
@@ -92,12 +94,20 @@ impl Instance {
             required_extensions.iter().map(|ext| ext.as_ptr()).collect();
         let required_layers_raw: Vec<*const c_char> =
             required_layers.iter().map(|layer| layer.as_ptr()).collect();
+        let p_next = match debug_messenger_create_info {
+            Some(create_info) => {
+                &create_info as *const vk::DebugUtilsMessengerCreateInfoEXT
+                    as *const std::ffi::c_void
+            }
+            None => std::ptr::null(),
+        };
+
         let instance_info = vk::InstanceCreateInfo {
             s_type: vk::StructureType::INSTANCE_CREATE_INFO,
             p_application_info: &app_info,
             enabled_extension_count: required_extensions_raw.len() as u32,
             pp_enabled_extension_names: required_extensions_raw.as_ptr(),
-            p_next: std::ptr::null(),
+            p_next,
             enabled_layer_count: required_layers_raw.len() as u32,
             pp_enabled_layer_names: required_layers_raw.as_ptr(),
             ..Default::default()
@@ -108,10 +118,10 @@ impl Instance {
                 .create_instance(&instance_info, None)
                 .expect("Extensions should be supported. Layer might not be installed, but this is only relevant for devs.")
         };
-        Instance {
+        Arc::new(Instance {
             entry,
             handle: instance,
-        }
+        })
     }
 }
 
