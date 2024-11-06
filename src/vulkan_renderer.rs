@@ -1,6 +1,7 @@
 use crate::vulkan_rs::debug;
 use crate::vulkan_rs::window;
 use crate::vulkan_rs::AppInfo;
+use crate::vulkan_rs::Device;
 use crate::vulkan_rs::EngineInfo;
 use crate::vulkan_rs::Instance;
 use crate::vulkan_rs::PhysicalDeviceSelector;
@@ -16,6 +17,7 @@ pub struct VulkanRenderer {
     debug_messenger: Option<debug::DebugMessenger>,
     surface: window::Surface,
     physical_device: vk::PhysicalDevice,
+    device: Device,
 }
 
 impl VulkanRenderer {
@@ -79,11 +81,14 @@ impl VulkanRenderer {
         let physical_device_selector = PhysicalDeviceSelector::new(min_vulkan_version);
         let physical_device = physical_device_selector.select(instance.clone(), &surface);
 
+        let device = Device::new(instance.clone(), &physical_device, &surface);
+
         VulkanRenderer {
             surface,
             instance,
             debug_messenger,
             physical_device,
+            device,
         }
     }
 }

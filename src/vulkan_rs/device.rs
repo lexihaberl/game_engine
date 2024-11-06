@@ -3,6 +3,8 @@ use super::instance::Version;
 use super::window::Surface;
 use ash::vk;
 use std::cmp::Reverse;
+use std::collections::HashSet;
+use std::ffi::c_char;
 use std::sync::Arc;
 
 pub struct PhysicalDeviceSelector {
@@ -78,9 +80,9 @@ impl PhysicalDeviceSelector {
             return false;
         }
 
-        let queue_families_supported =
-            Self::find_queue_families(instance, device, surface).is_complete();
+        let queue_families_supported = find_queue_families(instance, device, surface).is_complete();
 
+        //TODO: handle extensions/features better
         let required_device_extensions: [&str; 1] = ["VK_KHR_swapchain"];
         let extensions_supported =
             Self::check_device_extension_support(instance, device, &required_device_extensions);
@@ -120,37 +122,10 @@ impl PhysicalDeviceSelector {
         cross_section.count() == required_extensions.len()
     }
 
-    fn find_queue_families(
-        instance: &ash::Instance,
-        device: &vk::PhysicalDevice,
-        surface: &Surface,
-    ) -> QueueFamilyIndices {
-        let queue_family_properties =
-            unsafe { instance.get_physical_device_queue_family_properties(*device) };
-        let mut queue_family_indices = QueueFamilyIndices::new();
-        for (idx, queue_family_property) in queue_family_properties.iter().enumerate() {
-            if queue_family_property
-                .queue_flags
-                .contains(vk::QueueFlags::GRAPHICS)
-            {
-                queue_family_indices.graphics_family = Some(idx as u32);
-            }
-            if unsafe {
-                surface
-                    .loader
-                    .get_physical_device_surface_support(*device, idx as u32, surface.handle)
-                    .expect("Host does not have enough resources or smth")
-            } {
-                queue_family_indices.presentation_family = Some(idx as u32);
-            }
-        }
-        queue_family_indices
-    }
-
     fn get_supported_features<'a>(
         instance: &ash::Instance,
         device: &vk::PhysicalDevice,
-    ) -> SupportedFeatures<'a> {
+    ) -> DeviceFeatures<'a> {
         let mut vulkan11_feats = vk::PhysicalDeviceVulkan11Features {
             s_type: vk::StructureType::PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
             ..Default::default()
@@ -176,7 +151,7 @@ impl PhysicalDeviceSelector {
         };
 
         unsafe { instance.get_physical_device_features2(*device, &mut feature2) };
-        SupportedFeatures {
+        DeviceFeatures {
             vulkan11_features: vulkan11_feats,
             vulkan12_features: vulkan12_feats,
             vulkan13_features: vulkan13_feats,
@@ -233,6 +208,33 @@ impl QueueFamilyIndices {
     }
 }
 
+fn find_queue_families(
+    instance: &ash::Instance,
+    device: &vk::PhysicalDevice,
+    surface: &Surface,
+) -> QueueFamilyIndices {
+    let queue_family_properties =
+        unsafe { instance.get_physical_device_queue_family_properties(*device) };
+    let mut queue_family_indices = QueueFamilyIndices::new();
+    for (idx, queue_family_property) in queue_family_properties.iter().enumerate() {
+        if queue_family_property
+            .queue_flags
+            .contains(vk::QueueFlags::GRAPHICS)
+        {
+            queue_family_indices.graphics_family = Some(idx as u32);
+        }
+        if unsafe {
+            surface
+                .loader
+                .get_physical_device_surface_support(*device, idx as u32, surface.handle)
+                .expect("Host does not have enough resources or smth")
+        } {
+            queue_family_indices.presentation_family = Some(idx as u32);
+        }
+    }
+    queue_family_indices
+}
+
 #[derive(Debug)]
 #[allow(dead_code)]
 struct SwapChainSupportDetails {
@@ -272,9 +274,126 @@ impl SwapChainSupportDetails {
 }
 
 #[allow(dead_code)]
-pub struct SupportedFeatures<'a> {
+pub struct DeviceFeatures<'a> {
     pub vulkan11_features: vk::PhysicalDeviceVulkan11Features<'a>,
     pub vulkan12_features: vk::PhysicalDeviceVulkan12Features<'a>,
     pub vulkan13_features: vk::PhysicalDeviceVulkan13Features<'a>,
     pub base_features: vk::PhysicalDeviceFeatures,
+}
+
+pub struct Device {
+    instance: Arc<Instance>,
+    handle: ash::Device,
+    graphics_queue: vk::Queue,
+    presentation_queue: vk::Queue,
+}
+
+impl Device {
+    pub fn new(
+        instance: Arc<Instance>,
+        physical_device: &vk::PhysicalDevice,
+        //required_device_features: &DeviceFeatures,
+        //required_extensions: &[&str],
+        surface: &Surface,
+    ) -> Self {
+        let queue_family_indices = find_queue_families(&instance.handle, physical_device, surface);
+        let graphics_q_fam_idx = queue_family_indices
+            .graphics_family
+            .expect("Q should exist since we checked for device suitabiity");
+        let present_q_fam_idx = queue_family_indices
+            .presentation_family
+            .expect("Q should exist since we checked for device suitabiity");
+
+        let mut unique_queue_families = HashSet::new();
+        unique_queue_families.insert(graphics_q_fam_idx);
+        unique_queue_families.insert(present_q_fam_idx);
+        log::debug!("Using Queue Families: {:?}", unique_queue_families);
+
+        let mut queue_create_infos: Vec<vk::DeviceQueueCreateInfo> = Vec::new();
+        for queue_family_index in unique_queue_families {
+            let device_queue_create_info = vk::DeviceQueueCreateInfo {
+                s_type: vk::StructureType::DEVICE_QUEUE_CREATE_INFO,
+                p_next: std::ptr::null(),
+                queue_family_index,
+                queue_count: 1,
+                p_queue_priorities: [1.0].as_ptr(),
+                flags: vk::DeviceQueueCreateFlags::empty(),
+                ..Default::default()
+            };
+            queue_create_infos.push(device_queue_create_info);
+        }
+
+        //TODO handle better
+        let required_extensions = ["VK_KHR_swapchain"];
+        let required_extensions_cstr = required_extensions
+            .iter()
+            .map(|ext| std::ffi::CString::new(*ext).unwrap())
+            .collect::<Vec<std::ffi::CString>>();
+        let required_extension_names_raw: Vec<*const c_char> = required_extensions_cstr
+            .iter()
+            .map(|ext| ext.as_ptr() as *const c_char)
+            .collect();
+        let required_features = Self::populate_required_device_features();
+
+        let device_create_info = vk::DeviceCreateInfo {
+            s_type: vk::StructureType::DEVICE_CREATE_INFO,
+            p_queue_create_infos: queue_create_infos.as_ptr(),
+            queue_create_info_count: queue_create_infos.len() as u32,
+            p_next: &required_features as *const vk::PhysicalDeviceFeatures2
+                as *const std::ffi::c_void,
+            enabled_extension_count: required_extension_names_raw.len() as u32,
+            pp_enabled_extension_names: required_extension_names_raw.as_ptr(),
+            flags: vk::DeviceCreateFlags::empty(),
+            ..Default::default()
+        };
+        let logical_device = unsafe {
+            instance
+                .handle
+                .create_device(*physical_device, &device_create_info, None)
+                .expect("Device should hopefully not be out of memory already. Features and Extensions should be supported (checked during device suitability test)!")
+        };
+        let graphics_queue = unsafe { logical_device.get_device_queue(graphics_q_fam_idx, 0) };
+        let presentation_queue = unsafe { logical_device.get_device_queue(present_q_fam_idx, 0) };
+
+        Device {
+            instance,
+            handle: logical_device,
+            graphics_queue,
+            presentation_queue,
+        }
+    }
+
+    fn populate_required_device_features<'a>() -> vk::PhysicalDeviceFeatures2<'a> {
+        let mut vulkan12_feats = vk::PhysicalDeviceVulkan12Features {
+            s_type: vk::StructureType::PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+            buffer_device_address: vk::TRUE,
+            descriptor_indexing: vk::TRUE,
+            ..Default::default()
+        };
+        let mut vulkan13_feats = vk::PhysicalDeviceVulkan13Features {
+            s_type: vk::StructureType::PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+            p_next: &mut vulkan12_feats as *mut _ as *mut std::ffi::c_void,
+            dynamic_rendering: vk::TRUE,
+            synchronization2: vk::TRUE,
+            ..Default::default()
+        };
+        let device_features = vk::PhysicalDeviceFeatures {
+            ..Default::default()
+        };
+        vk::PhysicalDeviceFeatures2 {
+            s_type: vk::StructureType::PHYSICAL_DEVICE_FEATURES_2,
+            p_next: &mut vulkan13_feats as *mut _ as *mut std::ffi::c_void,
+            features: device_features,
+            ..Default::default()
+        }
+    }
+}
+
+impl Drop for Device {
+    fn drop(&mut self) {
+        log::debug!("Destroying device!");
+        unsafe {
+            self.handle.destroy_device(None);
+        }
+    }
 }
