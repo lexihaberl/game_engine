@@ -16,7 +16,7 @@ pub struct Version {
 }
 
 impl Version {
-    pub fn to_api_version(&self) -> u32 {
+    pub fn to_api_version(self) -> u32 {
         vk::make_api_version(0, self.major, self.minor, self.patch)
     }
 }
@@ -58,13 +58,21 @@ fn check_instance_layer_support(entry: &ash::Entry, required_layers: &[CString])
     true
 }
 
+pub struct AppInfo {
+    pub name: String,
+    pub version: Version,
+}
+
+pub struct EngineInfo {
+    pub name: String,
+    pub version: Version,
+    pub vulkan_version: Version,
+}
+
 impl Instance {
     pub fn new(
-        app_name: &str,
-        app_version: Version,
-        engine_name: &str,
-        engine_version: Version,
-        api_version: Version,
+        app_info: AppInfo,
+        engine_info: EngineInfo,
         required_layers: &[CString],
         required_extensions: &[CString],
         debug_messenger_create_info: Option<vk::DebugUtilsMessengerCreateInfoEXT>,
@@ -74,18 +82,27 @@ impl Instance {
         if !check_instance_layer_support(&entry, required_layers) {
             panic!("Required layers are not available!");
         }
-        let app_name = CString::new(app_name).expect("String should not contain null byte");
-        let engine_name = CString::new(engine_name).expect("String should not contain null byte");
-        let app_version =
-            vk::make_api_version(0, app_version.major, app_version.minor, app_version.patch);
+        let app_name = CString::new(app_info.name).expect("String should not contain null byte");
+        let engine_name =
+            CString::new(engine_info.name).expect("String should not contain null byte");
+        let app_version = vk::make_api_version(
+            0,
+            app_info.version.major,
+            app_info.version.minor,
+            app_info.version.patch,
+        );
         let engine_version = vk::make_api_version(
             0,
-            engine_version.major,
-            engine_version.minor,
-            engine_version.patch,
+            engine_info.version.major,
+            engine_info.version.minor,
+            engine_info.version.patch,
         );
-        let api_version =
-            vk::make_api_version(0, api_version.major, api_version.minor, api_version.patch);
+        let api_version = vk::make_api_version(
+            0,
+            engine_info.vulkan_version.major,
+            engine_info.vulkan_version.minor,
+            engine_info.vulkan_version.patch,
+        );
         let app_info = vk::ApplicationInfo {
             s_type: vk::StructureType::APPLICATION_INFO,
             p_application_name: app_name.as_ptr(),

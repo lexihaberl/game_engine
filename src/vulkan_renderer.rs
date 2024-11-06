@@ -1,16 +1,21 @@
 use crate::vulkan_rs::debug;
 use crate::vulkan_rs::window;
+use crate::vulkan_rs::AppInfo;
+use crate::vulkan_rs::EngineInfo;
 use crate::vulkan_rs::Instance;
 use crate::vulkan_rs::PhysicalDeviceSelector;
 use crate::vulkan_rs::Version;
+use ash::vk;
 use raw_window_handle::HasDisplayHandle;
 use std::sync::Arc;
 use winit::window::Window;
 
 pub struct VulkanRenderer {
     instance: Arc<Instance>,
+    #[allow(dead_code)]
     debug_messenger: Option<debug::DebugMessenger>,
     surface: window::Surface,
+    physical_device: vk::PhysicalDevice,
 }
 
 impl VulkanRenderer {
@@ -39,20 +44,26 @@ impl VulkanRenderer {
             minor: 3,
             patch: 0,
         };
+        let app_info = AppInfo {
+            name: "Vulkan Renderer".to_string(),
+            version: Version {
+                major: 1,
+                minor: 0,
+                patch: 0,
+            },
+        };
+        let engine_info = EngineInfo {
+            name: "Vulkan Engine".to_string(),
+            version: Version {
+                major: 1,
+                minor: 0,
+                patch: 0,
+            },
+            vulkan_version: min_vulkan_version,
+        };
         let instance = Instance::new(
-            "Vulkan Renderer",
-            Version {
-                major: 1,
-                minor: 0,
-                patch: 0,
-            },
-            "Vulkan Engine",
-            Version {
-                major: 1,
-                minor: 0,
-                patch: 0,
-            },
-            min_vulkan_version,
+            app_info,
+            engine_info,
             &required_layers,
             &required_extensions,
             debug_messenger_create_info,
@@ -72,6 +83,7 @@ impl VulkanRenderer {
             surface,
             instance,
             debug_messenger,
+            physical_device,
         }
     }
 }

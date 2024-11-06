@@ -10,7 +10,7 @@ use std::sync::Arc;
 use winit::window::Window;
 
 pub fn get_required_instance_extensions(display_handle: RawDisplayHandle) -> Vec<CString> {
-    let extensions = match display_handle {
+    match display_handle {
         RawDisplayHandle::Windows(_) => {
             vec![win32_surface::NAME.to_owned(), surface::NAME.to_owned()]
         }
@@ -36,8 +36,7 @@ pub fn get_required_instance_extensions(display_handle: RawDisplayHandle) -> Vec
         }
 
         _ => panic!("Unsupported display handle"),
-    };
-    extensions
+    }
 }
 
 pub unsafe fn create_surface(
