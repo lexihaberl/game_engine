@@ -1,17 +1,25 @@
 use crate::vulkan_rs::debug;
 use crate::vulkan_rs::window;
 use crate::vulkan_rs::Instance;
+use crate::vulkan_rs::PhysicalDeviceSelector;
 use crate::vulkan_rs::Version;
+use raw_window_handle::HasDisplayHandle;
 use std::sync::Arc;
+use winit::window::Window;
 
 pub struct VulkanRenderer {
     instance: Arc<Instance>,
     debug_messenger: Option<debug::DebugMessenger>,
+    surface: window::Surface,
 }
 
 impl VulkanRenderer {
-    pub fn new() -> VulkanRenderer {
-        let mut required_extensions = window::get_required_instance_extensions();
+    pub fn new(window: Arc<Window>) -> VulkanRenderer {
+        let raw_display_handle = window
+            .display_handle()
+            .expect("I hope window has a display handle")
+            .as_raw();
+        let mut required_extensions = window::get_required_instance_extensions(raw_display_handle);
         let (required_layers, debug_messenger_create_info) = if cfg!(debug_assertions) {
             log::info!("Debug mode enabled, enabling validation layers");
             let required_debug_extensions = debug::get_required_extensions();
@@ -26,6 +34,11 @@ impl VulkanRenderer {
         };
         log::debug!("Required extensions: {:?}", required_extensions);
         log::debug!("Required layers: {:?}", required_layers);
+        let min_vulkan_version = Version {
+            major: 1,
+            minor: 3,
+            patch: 0,
+        };
         let instance = Instance::new(
             "Vulkan Renderer",
             Version {
@@ -39,11 +52,7 @@ impl VulkanRenderer {
                 minor: 0,
                 patch: 0,
             },
-            Version {
-                major: 1,
-                minor: 0,
-                patch: 0,
-            },
+            min_vulkan_version,
             &required_layers,
             &required_extensions,
             debug_messenger_create_info,
@@ -54,15 +63,15 @@ impl VulkanRenderer {
         } else {
             None
         };
+        let surface = window::Surface::new(instance.clone(), window.clone());
+
+        let physical_device_selector = PhysicalDeviceSelector::new(min_vulkan_version);
+        let physical_device = physical_device_selector.select(instance.clone(), &surface);
+
         VulkanRenderer {
+            surface,
             instance,
             debug_messenger,
         }
-    }
-}
-
-impl Default for VulkanRenderer {
-    fn default() -> Self {
-        Self::new()
     }
 }

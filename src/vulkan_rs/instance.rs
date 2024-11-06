@@ -8,10 +8,17 @@ pub struct Instance {
     pub handle: ash::Instance,
 }
 
+#[derive(Copy, Clone)]
 pub struct Version {
     pub major: u32,
     pub minor: u32,
     pub patch: u32,
+}
+
+impl Version {
+    pub fn to_api_version(&self) -> u32 {
+        vk::make_api_version(0, self.major, self.minor, self.patch)
+    }
 }
 
 fn get_available_instance_layers(entry: &ash::Entry) -> Vec<CString> {

@@ -41,7 +41,7 @@ impl WindowState {
             )
             .expect("Window creation failed");
         let window = Arc::new(window);
-        log::info!("succesfully created window and renderer");
+        log::info!("succesfully created window");
         WindowState { window }
     }
 
@@ -78,7 +78,13 @@ impl ApplicationHandler for GameEngine {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         log::info!("Setting up window and renderer");
         self.window_state = Some(WindowState::new(event_loop, &self.default_window_settings));
-        self.renderer = Some(VulkanRenderer::new());
+        self.renderer = Some(VulkanRenderer::new(
+            self.window_state
+                .as_ref()
+                .expect("Should never fail since we just set the windowstate")
+                .window
+                .clone(),
+        ));
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
