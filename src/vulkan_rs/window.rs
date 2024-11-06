@@ -142,7 +142,7 @@ pub struct Surface {
 }
 
 impl Surface {
-    pub fn new(instance: Arc<Instance>, window: Arc<Window>) -> Surface {
+    pub fn new(instance: Arc<Instance>, window: Arc<Window>) -> Arc<Surface> {
         let raw_window_handle = window
             .window_handle()
             .expect("I hope the window handle exists")
@@ -162,12 +162,12 @@ impl Surface {
         };
         let loader = ash::khr::surface::Instance::new(&instance.entry, &instance.handle);
 
-        Surface {
+        Arc::new(Surface {
             handle: surface,
             loader,
             _instance: instance,
             _window: window,
-        }
+        })
     }
 }
 

@@ -5,6 +5,8 @@ use crate::vulkan_rs::Device;
 use crate::vulkan_rs::EngineInfo;
 use crate::vulkan_rs::Instance;
 use crate::vulkan_rs::PhysicalDeviceSelector;
+use crate::vulkan_rs::Surface;
+use crate::vulkan_rs::Swapchain;
 use crate::vulkan_rs::Version;
 use ash::vk;
 use raw_window_handle::HasDisplayHandle;
@@ -15,9 +17,10 @@ pub struct VulkanRenderer {
     instance: Arc<Instance>,
     #[allow(dead_code)]
     debug_messenger: Option<debug::DebugMessenger>,
-    surface: window::Surface,
+    surface: Arc<Surface>,
     physical_device: vk::PhysicalDevice,
-    device: Device,
+    device: Arc<Device>,
+    swapchain: Swapchain,
 }
 
 impl VulkanRenderer {
@@ -83,12 +86,21 @@ impl VulkanRenderer {
 
         let device = Device::new(instance.clone(), &physical_device, &surface);
 
+        let swapchain = Swapchain::new(
+            instance.clone(),
+            surface.clone(),
+            &physical_device,
+            device.clone(),
+            window.inner_size().to_logical(window.scale_factor()),
+        );
+
         VulkanRenderer {
             surface,
             instance,
             debug_messenger,
             physical_device,
             device,
+            swapchain,
         }
     }
 }

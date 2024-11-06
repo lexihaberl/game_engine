@@ -1,5 +1,6 @@
 use super::instance::Instance;
 use super::instance::Version;
+use super::swapchain::SwapChainSupportDetails;
 use super::window::Surface;
 use ash::vk;
 use std::cmp::Reverse;
@@ -82,7 +83,8 @@ impl PhysicalDeviceSelector {
 
         let queue_families_supported = find_queue_families(instance, device, surface).is_complete();
 
-        //TODO: handle extensions/features better
+        //TODO: handle extensions/features/swap_chain_support better, s.t. you dont have to specify
+        //stuff twice
         let required_device_extensions: [&str; 1] = ["VK_KHR_swapchain"];
         let extensions_supported =
             Self::check_device_extension_support(instance, device, &required_device_extensions);
@@ -235,44 +237,6 @@ fn find_queue_families(
     queue_family_indices
 }
 
-#[derive(Debug)]
-#[allow(dead_code)]
-struct SwapChainSupportDetails {
-    capabilities: vk::SurfaceCapabilitiesKHR,
-    surface_formats: Vec<vk::SurfaceFormatKHR>,
-    present_modes: Vec<vk::PresentModeKHR>,
-}
-
-impl SwapChainSupportDetails {
-    fn query_support_details(
-        surface: &Surface,
-        device: &vk::PhysicalDevice,
-    ) -> SwapChainSupportDetails {
-        let surface_instance = &surface.loader;
-        let surface = surface.handle;
-        let capabilities = unsafe {
-            surface_instance
-                .get_physical_device_surface_capabilities(*device, surface)
-                .expect("Could not get surface capabilities")
-        };
-        let surface_formats = unsafe {
-            surface_instance
-                .get_physical_device_surface_formats(*device, surface)
-                .expect("Could not get surface formats")
-        };
-        let present_modes = unsafe {
-            surface_instance
-                .get_physical_device_surface_present_modes(*device, surface)
-                .expect("Could not get present modes")
-        };
-        SwapChainSupportDetails {
-            capabilities,
-            surface_formats,
-            present_modes,
-        }
-    }
-}
-
 #[allow(dead_code)]
 pub struct DeviceFeatures<'a> {
     pub vulkan11_features: vk::PhysicalDeviceVulkan11Features<'a>,
@@ -283,9 +247,11 @@ pub struct DeviceFeatures<'a> {
 
 pub struct Device {
     instance: Arc<Instance>,
-    handle: ash::Device,
+    pub handle: ash::Device,
     graphics_queue: vk::Queue,
+    pub graphics_queue_family_idx: u32,
     presentation_queue: vk::Queue,
+    pub presentation_queue_family_idx: u32,
 }
 
 impl Device {
@@ -295,7 +261,7 @@ impl Device {
         //required_device_features: &DeviceFeatures,
         //required_extensions: &[&str],
         surface: &Surface,
-    ) -> Self {
+    ) -> Arc<Self> {
         let queue_family_indices = find_queue_families(&instance.handle, physical_device, surface);
         let graphics_q_fam_idx = queue_family_indices
             .graphics_family
@@ -355,12 +321,14 @@ impl Device {
         let graphics_queue = unsafe { logical_device.get_device_queue(graphics_q_fam_idx, 0) };
         let presentation_queue = unsafe { logical_device.get_device_queue(present_q_fam_idx, 0) };
 
-        Device {
+        Arc::new(Device {
             instance,
             handle: logical_device,
             graphics_queue,
+            graphics_queue_family_idx: graphics_q_fam_idx,
             presentation_queue,
-        }
+            presentation_queue_family_idx: present_q_fam_idx,
+        })
     }
 
     fn populate_required_device_features<'a>() -> vk::PhysicalDeviceFeatures2<'a> {
