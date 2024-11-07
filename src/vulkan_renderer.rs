@@ -13,6 +13,32 @@ use raw_window_handle::HasDisplayHandle;
 use std::sync::Arc;
 use winit::window::Window;
 
+pub struct FrameData {
+    device: Arc<Device>,
+    pub command_pool: vk::CommandPool,
+    pub command_buffer: vk::CommandBuffer,
+}
+
+impl FrameData {
+    fn new(device: Arc<Device>) -> FrameData {
+        let command_pool = device.create_command_pool();
+        let command_buffer = device.create_command_buffer(command_pool);
+        FrameData {
+            device,
+            command_pool,
+            command_buffer,
+        }
+    }
+}
+
+impl Drop for FrameData {
+    fn drop(&mut self) {
+        self.device.destroy_command_pool(self.command_pool);
+    }
+}
+
+pub const MAX_FRAMES_IN_FLIGHT: usize = 3;
+
 pub struct VulkanRenderer {
     instance: Arc<Instance>,
     #[allow(dead_code)]
@@ -21,6 +47,8 @@ pub struct VulkanRenderer {
     physical_device: vk::PhysicalDevice,
     device: Arc<Device>,
     swapchain: Swapchain,
+    frame_data: Vec<FrameData>,
+    frame_index: usize,
 }
 
 impl VulkanRenderer {
@@ -94,6 +122,11 @@ impl VulkanRenderer {
             window.inner_size().to_logical(window.scale_factor()),
         );
 
+        let mut frame_data = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        for _ in 0..MAX_FRAMES_IN_FLIGHT {
+            frame_data.push(FrameData::new(device.clone()));
+        }
+
         VulkanRenderer {
             surface,
             instance,
@@ -101,6 +134,18 @@ impl VulkanRenderer {
             physical_device,
             device,
             swapchain,
+            frame_data,
+            frame_index: 0,
         }
+    }
+
+    fn get_current_frame(&self) -> &FrameData {
+        &self.frame_data[self.frame_index % MAX_FRAMES_IN_FLIGHT]
+    }
+}
+
+impl Drop for VulkanRenderer {
+    fn drop(&mut self) {
+        self.device.wait_idle();
     }
 }

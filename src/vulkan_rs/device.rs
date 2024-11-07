@@ -355,6 +355,55 @@ impl Device {
             ..Default::default()
         }
     }
+
+    pub fn create_command_pool(&self) -> vk::CommandPool {
+        let command_pool_create_info = vk::CommandPoolCreateInfo {
+            s_type: vk::StructureType::COMMAND_POOL_CREATE_INFO,
+            flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+            queue_family_index: self.graphics_queue_family_idx,
+            p_next: std::ptr::null(),
+            ..Default::default()
+        };
+
+        unsafe {
+            self.handle
+                .create_command_pool(&command_pool_create_info, None)
+                .expect("I pray that I never run out of memory")
+        }
+    }
+
+    pub fn create_command_buffer(&self, command_pool: vk::CommandPool) -> vk::CommandBuffer {
+        let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
+            s_type: vk::StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
+            command_pool,
+            level: vk::CommandBufferLevel::PRIMARY,
+            command_buffer_count: 1,
+            p_next: std::ptr::null(),
+            ..Default::default()
+        };
+        unsafe {
+            *self
+                .handle
+                .allocate_command_buffers(&command_buffer_allocate_info)
+                .expect("I pray that I never run out of memory")
+                .first()
+                .expect("We should get atleast 1 command_buffer since count is set to 1")
+        }
+    }
+
+    pub fn destroy_command_pool(&self, command_pool: vk::CommandPool) {
+        unsafe {
+            self.handle.destroy_command_pool(command_pool, None);
+        }
+    }
+
+    pub fn wait_idle(&self) {
+        unsafe {
+            self.handle
+                .device_wait_idle()
+                .expect("I pray that I never run out of memory");
+        }
+    }
 }
 
 impl Drop for Device {
