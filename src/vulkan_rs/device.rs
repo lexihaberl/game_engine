@@ -246,11 +246,11 @@ pub struct DeviceFeatures<'a> {
 }
 
 pub struct Device {
-    instance: Arc<Instance>,
+    _instance: Arc<Instance>,
     pub handle: ash::Device,
     graphics_queue: vk::Queue,
     pub graphics_queue_family_idx: u32,
-    presentation_queue: vk::Queue,
+    pub presentation_queue: vk::Queue,
     pub presentation_queue_family_idx: u32,
 }
 
@@ -322,7 +322,7 @@ impl Device {
         let presentation_queue = unsafe { logical_device.get_device_queue(present_q_fam_idx, 0) };
 
         Arc::new(Device {
-            instance,
+            _instance: instance,
             handle: logical_device,
             graphics_queue,
             graphics_queue_family_idx: graphics_q_fam_idx,
@@ -394,6 +394,185 @@ impl Device {
     pub fn destroy_command_pool(&self, command_pool: vk::CommandPool) {
         unsafe {
             self.handle.destroy_command_pool(command_pool, None);
+        }
+    }
+
+    pub fn create_semaphore(&self) -> vk::Semaphore {
+        let semaphore_create_info = vk::SemaphoreCreateInfo {
+            s_type: vk::StructureType::SEMAPHORE_CREATE_INFO,
+            p_next: std::ptr::null(),
+            flags: vk::SemaphoreCreateFlags::empty(),
+            ..Default::default()
+        };
+        unsafe {
+            self.handle
+                .create_semaphore(&semaphore_create_info, None)
+                .expect("I pray that I never run out of memory")
+        }
+    }
+
+    pub fn destroy_semaphore(&self, semaphore: vk::Semaphore) {
+        unsafe {
+            self.handle.destroy_semaphore(semaphore, None);
+        }
+    }
+
+    pub fn create_fence(&self, flags: vk::FenceCreateFlags) -> vk::Fence {
+        let fence_create_info = vk::FenceCreateInfo {
+            s_type: vk::StructureType::FENCE_CREATE_INFO,
+            p_next: std::ptr::null(),
+            flags,
+            ..Default::default()
+        };
+        unsafe {
+            self.handle
+                .create_fence(&fence_create_info, None)
+                .expect("I pray that I never run out of memory")
+        }
+    }
+
+    pub fn destroy_fence(&self, fence: vk::Fence) {
+        unsafe {
+            self.handle.destroy_fence(fence, None);
+        }
+    }
+
+    pub fn wait_for_fence(&self, fence: &vk::Fence, timeout: u64) {
+        self.wait_for_fences(&[*fence], true, timeout)
+    }
+
+    pub fn wait_for_fences(&self, fences: &[vk::Fence], wait_all: bool, timeout: u64) {
+        unsafe {
+            self.handle
+                .wait_for_fences(fences, wait_all, timeout)
+                .expect("I pray that I never run out of memory")
+        }
+    }
+
+    pub fn reset_fence(&self, fence: &vk::Fence) {
+        self.reset_fences(&[*fence])
+    }
+
+    pub fn reset_fences(&self, fences: &[vk::Fence]) {
+        unsafe {
+            self.handle
+                .reset_fences(fences)
+                .expect("I pray that I never run out of memory")
+        }
+    }
+
+    pub fn begin_command_buffer(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        flags: vk::CommandBufferUsageFlags,
+    ) {
+        let begin_command_buffer_info = vk::CommandBufferBeginInfo {
+            s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
+            flags,
+            p_inheritance_info: std::ptr::null(),
+            ..Default::default()
+        };
+
+        unsafe {
+            self.handle
+                .begin_command_buffer(command_buffer, &begin_command_buffer_info)
+                .expect("I pray that I never run out of memory")
+        }
+    }
+
+    pub fn reset_command_buffer(&self, command_buffer: vk::CommandBuffer) {
+        unsafe {
+            self.handle
+                .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
+                .expect("I pray that I never run out of memory");
+        }
+    }
+
+    pub fn end_command_buffer(&self, command_buffer: vk::CommandBuffer) {
+        unsafe {
+            self.handle
+                .end_command_buffer(command_buffer)
+                .expect("I pray that I never run out of memory");
+        }
+    }
+
+    pub fn transition_image_layout(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        image: vk::Image,
+        current_layout: vk::ImageLayout,
+        new_layout: vk::ImageLayout,
+    ) {
+        let aspect_mask = if new_layout == vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL {
+            vk::ImageAspectFlags::DEPTH
+        } else {
+            vk::ImageAspectFlags::COLOR
+        };
+        let image_subresource_range = vk::ImageSubresourceRange {
+            aspect_mask,
+            base_mip_level: 0,
+            level_count: vk::REMAINING_MIP_LEVELS,
+            base_array_layer: 0,
+            layer_count: vk::REMAINING_ARRAY_LAYERS,
+        };
+        let image_barrier = vk::ImageMemoryBarrier2 {
+            s_type: vk::StructureType::IMAGE_MEMORY_BARRIER_2,
+            p_next: std::ptr::null(),
+            //TODO all commands is not very performant -> make it more specific at some point
+            // refer to https://github.com/KhronosGroup/Vulkan-Docs/wiki/Synchronization-Examples
+            src_stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
+            src_access_mask: vk::AccessFlags2::MEMORY_WRITE,
+            dst_stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
+            dst_access_mask: vk::AccessFlags2::MEMORY_WRITE | vk::AccessFlags2::MEMORY_READ,
+            old_layout: current_layout,
+            new_layout,
+            image,
+            subresource_range: image_subresource_range,
+            ..Default::default()
+        };
+        let dependancy_info = vk::DependencyInfo {
+            s_type: vk::StructureType::DEPENDENCY_INFO,
+            p_next: std::ptr::null(),
+            image_memory_barrier_count: 1,
+            p_image_memory_barriers: &image_barrier,
+            ..Default::default()
+        };
+        unsafe {
+            self.handle
+                .cmd_pipeline_barrier2(command_buffer, &dependancy_info);
+        }
+    }
+
+    pub fn cmd_clear_color_image(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        image: vk::Image,
+        image_layout: vk::ImageLayout,
+        clear_color: &vk::ClearColorValue,
+    ) {
+        let image_subresource_range = vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: vk::REMAINING_MIP_LEVELS,
+            base_array_layer: 0,
+            layer_count: vk::REMAINING_ARRAY_LAYERS,
+        };
+        unsafe {
+            self.handle.cmd_clear_color_image(
+                command_buffer,
+                image,
+                image_layout,
+                clear_color,
+                &[image_subresource_range],
+            );
+        }
+    }
+
+    pub fn submit_to_graphics_queue(&self, submit_info: vk::SubmitInfo2, fence: vk::Fence) {
+        unsafe {
+            self.handle
+                .queue_submit2(self.graphics_queue, &[submit_info], fence)
+                .expect("I pray that I never run out of memory");
         }
     }
 

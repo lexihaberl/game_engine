@@ -17,16 +17,25 @@ pub struct FrameData {
     device: Arc<Device>,
     pub command_pool: vk::CommandPool,
     pub command_buffer: vk::CommandBuffer,
+    image_available_semaphore: vk::Semaphore,
+    result_presentable_semaphore: vk::Semaphore,
+    in_flight_fence: vk::Fence,
 }
 
 impl FrameData {
     fn new(device: Arc<Device>) -> FrameData {
         let command_pool = device.create_command_pool();
         let command_buffer = device.create_command_buffer(command_pool);
+        let image_available_semaphore = device.create_semaphore();
+        let result_presentable_semaphore = device.create_semaphore();
+        let in_flight_fence = device.create_fence(vk::FenceCreateFlags::SIGNALED);
         FrameData {
             device,
             command_pool,
             command_buffer,
+            image_available_semaphore,
+            result_presentable_semaphore,
+            in_flight_fence,
         }
     }
 }
@@ -34,16 +43,24 @@ impl FrameData {
 impl Drop for FrameData {
     fn drop(&mut self) {
         self.device.destroy_command_pool(self.command_pool);
+        self.device
+            .destroy_semaphore(self.image_available_semaphore);
+        self.device
+            .destroy_semaphore(self.result_presentable_semaphore);
+        self.device.destroy_fence(self.in_flight_fence);
     }
 }
 
-pub const MAX_FRAMES_IN_FLIGHT: usize = 3;
+pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 pub struct VulkanRenderer {
+    #[allow(dead_code)]
     instance: Arc<Instance>,
     #[allow(dead_code)]
     debug_messenger: Option<debug::DebugMessenger>,
+    #[allow(dead_code)]
     surface: Arc<Surface>,
+    #[allow(dead_code)]
     physical_device: vk::PhysicalDevice,
     device: Arc<Device>,
     swapchain: Swapchain,
@@ -141,6 +158,102 @@ impl VulkanRenderer {
 
     fn get_current_frame(&self) -> &FrameData {
         &self.frame_data[self.frame_index % MAX_FRAMES_IN_FLIGHT]
+    }
+
+    pub fn draw(&mut self) {
+        let current_frame = self.get_current_frame();
+        // MAX_IN_FLIGHT_FRAMES is 2 => we wait for the frame before the previous one to finish.
+        self.device
+            .wait_for_fence(&current_frame.in_flight_fence, 1_000_000_000); //1E9 ns -> 1s
+        self.device.reset_fence(&current_frame.in_flight_fence);
+
+        let image_index = self
+            .swapchain
+            .acquire_next_image(current_frame.image_available_semaphore, 1_000_000_000);
+        let image = self.swapchain.images[image_index as usize];
+
+        let command_buffer = current_frame.command_buffer;
+        // commands are finished -> can reset command buffer
+        self.device.reset_command_buffer(command_buffer);
+
+        // start recording commands
+        self.device
+            .begin_command_buffer(command_buffer, vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        self.device.transition_image_layout(
+            command_buffer,
+            image,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::GENERAL,
+        );
+        let flash_color = (self.frame_index as f32 / 100.0).sin().abs();
+        let clear_value = vk::ClearColorValue {
+            float32: [0.0, 0.0, flash_color, 1.0],
+        };
+        self.device.cmd_clear_color_image(
+            command_buffer,
+            image,
+            vk::ImageLayout::GENERAL,
+            &clear_value,
+        );
+        self.device.transition_image_layout(
+            command_buffer,
+            image,
+            vk::ImageLayout::GENERAL,
+            vk::ImageLayout::PRESENT_SRC_KHR,
+        );
+        self.device.end_command_buffer(command_buffer);
+        self.submit_to_queue(current_frame, current_frame.in_flight_fence);
+        self.swapchain
+            .present_image(current_frame.result_presentable_semaphore, image_index);
+        self.frame_index += 1;
+    }
+
+    fn submit_to_queue(&self, current_frame: &FrameData, fence: vk::Fence) {
+        // command_buffer: is the clear cmd buffer
+        // when submitting -> we say that this cmd buffer should be executed
+        // when the image_available_semaphore was signaled (i.e. the image is available)
+        // and after the cmd buffer is executed, the result_presentable_semaphore will be signaled
+        // so that we can present the image to the surface
+        let cmd_buffer_submit_info = vk::CommandBufferSubmitInfo {
+            s_type: vk::StructureType::COMMAND_BUFFER_SUBMIT_INFO,
+            command_buffer: current_frame.command_buffer,
+            p_next: std::ptr::null(),
+            ..Default::default()
+        };
+        let wait_semaphore_submit_info = vk::SemaphoreSubmitInfo {
+            s_type: vk::StructureType::SEMAPHORE_SUBMIT_INFO,
+            semaphore: current_frame.image_available_semaphore,
+            stage_mask: vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            p_next: std::ptr::null(),
+            device_index: 0,
+            value: 1,
+            ..Default::default()
+        };
+        let signal_semaphore_submit_info = vk::SemaphoreSubmitInfo {
+            s_type: vk::StructureType::SEMAPHORE_SUBMIT_INFO,
+            semaphore: current_frame.result_presentable_semaphore,
+            stage_mask: vk::PipelineStageFlags2::ALL_GRAPHICS,
+            p_next: std::ptr::null(),
+            device_index: 0,
+            value: 1,
+            ..Default::default()
+        };
+        let submit_info = vk::SubmitInfo2 {
+            s_type: vk::StructureType::SUBMIT_INFO_2,
+            p_next: std::ptr::null(),
+            wait_semaphore_info_count: 1,
+            p_wait_semaphore_infos: &wait_semaphore_submit_info,
+            signal_semaphore_info_count: 1,
+            p_signal_semaphore_infos: &signal_semaphore_submit_info,
+            command_buffer_info_count: 1,
+            p_command_buffer_infos: &cmd_buffer_submit_info,
+            ..Default::default()
+        };
+        self.device.submit_to_graphics_queue(submit_info, fence);
+    }
+
+    pub fn wait_idle(&self) {
+        self.device.wait_idle();
     }
 }
 

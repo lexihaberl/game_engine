@@ -24,71 +24,51 @@ impl WindowSettings {
     }
 }
 
-struct WindowState {
-    window: Arc<Window>,
-}
-
-impl WindowState {
-    fn new(event_loop: &ActiveEventLoop, settings: &WindowSettings) -> Self {
-        let window = event_loop
-            .create_window(
-                Window::default_attributes()
-                    .with_title(settings.title.clone())
-                    .with_inner_size(winit::dpi::LogicalSize::new(
-                        settings.width,
-                        settings.height,
-                    )),
-            )
-            .expect("Window creation failed");
-        let window = Arc::new(window);
-        log::info!("succesfully created window");
-        WindowState { window }
-    }
-
-    fn draw(&mut self) {
-        self.window.pre_present_notify();
-    }
-
-    fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {}
-
-    fn wait_idle(&self) {}
-
-    fn request_redraw(&self) {}
-}
-
 struct GameEngine {
-    window_state: Option<WindowState>,
-    default_window_settings: WindowSettings,
+    window: Option<Arc<Window>>,
+    window_settings: WindowSettings,
     last_frame: std::time::Instant,
     renderer: Option<VulkanRenderer>,
 }
 
 impl GameEngine {
-    fn new(default_window_settings: WindowSettings) -> GameEngine {
+    fn new(window_settings: WindowSettings) -> GameEngine {
         GameEngine {
-            window_state: None,
-            default_window_settings,
+            window: None,
+            window_settings,
             last_frame: std::time::Instant::now(),
             renderer: None,
         }
+    }
+
+    fn init_window(&mut self, event_loop: &ActiveEventLoop) -> Arc<Window> {
+        let window = event_loop
+            .create_window(
+                Window::default_attributes()
+                    .with_title(self.window_settings.title.clone())
+                    .with_inner_size(winit::dpi::LogicalSize::new(
+                        self.window_settings.width,
+                        self.window_settings.height,
+                    )),
+            )
+            .expect("Window creation failed");
+        let window = Arc::new(window);
+        log::info!("succesfully created window");
+        window
     }
 }
 
 impl ApplicationHandler for GameEngine {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         log::info!("Setting up window and renderer");
-        self.window_state = Some(WindowState::new(event_loop, &self.default_window_settings));
-        self.renderer = Some(VulkanRenderer::new(
-            self.window_state
-                .as_ref()
-                .expect("Should never fail since we just set the windowstate")
-                .window
-                .clone(),
-        ));
+        let window = self.init_window(event_loop);
+
+        self.renderer = Some(VulkanRenderer::new(window.clone()));
+        self.window = Some(window);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        if let Some(window_state) = &mut self.window_state {
+        if let (Some(renderer), Some(window)) = (self.renderer.as_mut(), self.window.as_ref()) {
             let mut exit = false;
             match event {
                 WindowEvent::CloseRequested => {
@@ -97,10 +77,15 @@ impl ApplicationHandler for GameEngine {
                 }
                 WindowEvent::RedrawRequested => {
                     self.last_frame = std::time::Instant::now();
-                    window_state.draw();
+                    window.pre_present_notify();
+                    renderer.draw();
                 }
                 WindowEvent::Resized(physical_size) => {
-                    window_state.resize(physical_size);
+                    log::warn!(
+                        "Resizing not yet implemented. Should resize to {:?}",
+                        physical_size
+                    );
+                    //window_state.resize(physical_size);
                 }
                 WindowEvent::KeyboardInput {
                     event:
@@ -124,7 +109,7 @@ impl ApplicationHandler for GameEngine {
             }
             if exit {
                 event_loop.exit();
-                window_state.wait_idle();
+                renderer.wait_idle();
             }
         }
     }
@@ -132,8 +117,8 @@ impl ApplicationHandler for GameEngine {
     fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: winit::event::StartCause) {
         match cause {
             winit::event::StartCause::Poll => {
-                if let Some(window_state) = &self.window_state {
-                    window_state.request_redraw();
+                if let Some(window) = &self.window {
+                    window.request_redraw();
                 }
             }
             _ => log::info!("Ignoring cause: {:?}", cause),

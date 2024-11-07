@@ -53,6 +53,7 @@ pub struct Swapchain {
     pub image_views: Vec<vk::ImageView>,
     pub extent: vk::Extent2D,
     pub format: vk::Format,
+    presentation_queue: vk::Queue,
 }
 
 impl Swapchain {
@@ -94,7 +95,7 @@ impl Swapchain {
             image_color_space: surface_format.color_space,
             image_extent: extent,
             image_array_layers: 1,
-            image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+            image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_DST,
             image_sharing_mode,
             queue_family_index_count: queue_fam_index_count,
             p_queue_family_indices: p_queue_fam_indices,
@@ -122,6 +123,7 @@ impl Swapchain {
         let image_views =
             Self::create_image_views(&device.handle, surface_format.format, &swapchain_images);
 
+        let presentation_queue = device.presentation_queue;
         Self {
             device,
             surface,
@@ -130,6 +132,7 @@ impl Swapchain {
             images: swapchain_images,
             image_views,
             extent,
+            presentation_queue,
             format: surface_format.format,
         }
     }
@@ -220,6 +223,40 @@ impl Swapchain {
             swapchain_views.push(image_view);
         }
         swapchain_views
+    }
+
+    pub fn acquire_next_image(&self, semaphore: vk::Semaphore, timeout: u64) -> u32 {
+        let result = unsafe {
+            self.swapchain_loader.acquire_next_image(
+                self.swapchain,
+                timeout,
+                semaphore,
+                vk::Fence::null(),
+            )
+        };
+        match result {
+            Ok((image_index, _is_surface_suboptimal)) => image_index,
+            Err(e) => panic!("Failed to acquire next image: {:?}", e),
+        }
+    }
+
+    pub fn present_image(&self, wait_semaphore: vk::Semaphore, image_index: u32) {
+        let present_info = vk::PresentInfoKHR {
+            s_type: vk::StructureType::PRESENT_INFO_KHR,
+            p_next: std::ptr::null(),
+            swapchain_count: 1,
+            p_swapchains: &self.swapchain,
+            p_wait_semaphores: &wait_semaphore,
+            wait_semaphore_count: 1,
+            p_image_indices: &image_index,
+            ..Default::default()
+        };
+
+        unsafe {
+            self.swapchain_loader
+                .queue_present(self.presentation_queue, &present_info)
+                .expect("Failed to present image");
+        }
     }
 }
 
