@@ -292,39 +292,6 @@ impl Device {
             .iter()
             .map(|ext| ext.as_ptr() as *const c_char)
             .collect();
-        let required_features = Self::populate_required_device_features();
-
-        let device_create_info = vk::DeviceCreateInfo {
-            s_type: vk::StructureType::DEVICE_CREATE_INFO,
-            p_queue_create_infos: queue_create_infos.as_ptr(),
-            queue_create_info_count: queue_create_infos.len() as u32,
-            p_next: &required_features as *const vk::PhysicalDeviceFeatures2
-                as *const std::ffi::c_void,
-            enabled_extension_count: required_extension_names_raw.len() as u32,
-            pp_enabled_extension_names: required_extension_names_raw.as_ptr(),
-            flags: vk::DeviceCreateFlags::empty(),
-            ..Default::default()
-        };
-        let logical_device = unsafe {
-            instance
-                .handle
-                .create_device(*physical_device, &device_create_info, None)
-                .expect("Device should hopefully not be out of memory already. Features and Extensions should be supported (checked during device suitability test)!")
-        };
-        let graphics_queue = unsafe { logical_device.get_device_queue(graphics_q_fam_idx, 0) };
-        let presentation_queue = unsafe { logical_device.get_device_queue(present_q_fam_idx, 0) };
-
-        Arc::new(Device {
-            _instance: instance,
-            handle: logical_device,
-            graphics_queue,
-            graphics_queue_family_idx: graphics_q_fam_idx,
-            presentation_queue,
-            presentation_queue_family_idx: present_q_fam_idx,
-        })
-    }
-
-    fn populate_required_device_features<'a>() -> vk::PhysicalDeviceFeatures2<'a> {
         let mut vulkan12_feats = vk::PhysicalDeviceVulkan12Features {
             s_type: vk::StructureType::PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
             buffer_device_address: vk::TRUE,
@@ -341,12 +308,44 @@ impl Device {
         let device_features = vk::PhysicalDeviceFeatures {
             ..Default::default()
         };
-        vk::PhysicalDeviceFeatures2 {
+        let required_features = vk::PhysicalDeviceFeatures2 {
             s_type: vk::StructureType::PHYSICAL_DEVICE_FEATURES_2,
             p_next: &mut vulkan13_feats as *mut _ as *mut std::ffi::c_void,
             features: device_features,
             ..Default::default()
-        }
+        };
+
+        log::debug!("Creating logical device!");
+        let device_create_info = vk::DeviceCreateInfo {
+            s_type: vk::StructureType::DEVICE_CREATE_INFO,
+            p_queue_create_infos: queue_create_infos.as_ptr(),
+            queue_create_info_count: queue_create_infos.len() as u32,
+            p_next: &required_features as *const vk::PhysicalDeviceFeatures2
+                as *const std::ffi::c_void,
+            enabled_extension_count: required_extension_names_raw.len() as u32,
+            pp_enabled_extension_names: required_extension_names_raw.as_ptr(),
+            flags: vk::DeviceCreateFlags::empty(),
+            ..Default::default()
+        };
+        log::debug!("Creating logical device2!");
+        let logical_device = unsafe {
+            instance
+                .handle
+                .create_device(*physical_device, &device_create_info, None)
+                .expect("Device should hopefully not be out of memory already. Features and Extensions should be supported (checked during device suitability test)!")
+        };
+        log::debug!("Creating logical device3!");
+        let graphics_queue = unsafe { logical_device.get_device_queue(graphics_q_fam_idx, 0) };
+        let presentation_queue = unsafe { logical_device.get_device_queue(present_q_fam_idx, 0) };
+
+        Arc::new(Device {
+            _instance: instance,
+            handle: logical_device,
+            graphics_queue,
+            graphics_queue_family_idx: graphics_q_fam_idx,
+            presentation_queue,
+            presentation_queue_family_idx: present_q_fam_idx,
+        })
     }
 
     pub fn create_command_pool(&self) -> vk::CommandPool {
