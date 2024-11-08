@@ -239,12 +239,12 @@ pub struct DeviceFeatures<'a> {
 }
 
 pub struct Device {
-    _instance: Arc<Instance>,
-    pub handle: ash::Device,
+    instance: Arc<Instance>,
+    handle: ash::Device,
     graphics_queue: vk::Queue,
-    pub graphics_queue_family_idx: u32,
-    pub presentation_queue: vk::Queue,
-    pub presentation_queue_family_idx: u32,
+    graphics_queue_family_idx: u32,
+    presentation_queue: vk::Queue,
+    presentation_queue_family_idx: u32,
 }
 
 impl Device {
@@ -282,7 +282,7 @@ impl Device {
             queue_create_infos.push(device_queue_create_info);
         }
 
-        //TODO handle better
+        //TODO: handle better
         let required_extensions = ["VK_KHR_swapchain"];
         let required_extensions_cstr = required_extensions
             .iter()
@@ -315,7 +315,6 @@ impl Device {
             ..Default::default()
         };
 
-        log::debug!("Creating logical device!");
         let device_create_info = vk::DeviceCreateInfo {
             s_type: vk::StructureType::DEVICE_CREATE_INFO,
             p_queue_create_infos: queue_create_infos.as_ptr(),
@@ -327,19 +326,17 @@ impl Device {
             flags: vk::DeviceCreateFlags::empty(),
             ..Default::default()
         };
-        log::debug!("Creating logical device2!");
         let logical_device = unsafe {
             instance
                 .handle
                 .create_device(*physical_device, &device_create_info, None)
                 .expect("Device should hopefully not be out of memory already. Features and Extensions should be supported (checked during device suitability test)!")
         };
-        log::debug!("Creating logical device3!");
         let graphics_queue = unsafe { logical_device.get_device_queue(graphics_q_fam_idx, 0) };
         let presentation_queue = unsafe { logical_device.get_device_queue(present_q_fam_idx, 0) };
 
         Arc::new(Device {
-            _instance: instance,
+            instance,
             handle: logical_device,
             graphics_queue,
             graphics_queue_family_idx: graphics_q_fam_idx,
@@ -387,6 +384,67 @@ impl Device {
         unsafe {
             self.handle.destroy_command_pool(command_pool, None);
         }
+    }
+
+    pub fn get_graphics_queue_idx(&self) -> u32 {
+        self.graphics_queue_family_idx
+    }
+
+    pub fn get_presentation_queue_idx(&self) -> u32 {
+        self.presentation_queue_family_idx
+    }
+
+    pub fn get_presentation_queue(&self) -> vk::Queue {
+        self.presentation_queue
+    }
+
+    pub fn destroy_image_view(&self, image_view: vk::ImageView) {
+        unsafe {
+            self.handle.destroy_image_view(image_view, None);
+        }
+    }
+
+    pub fn create_image_views(
+        &self,
+        format: vk::Format,
+        swapchain_images: &[vk::Image],
+    ) -> Vec<vk::ImageView> {
+        let mut swapchain_views: Vec<vk::ImageView> = Vec::with_capacity(swapchain_images.len());
+        for image in swapchain_images.iter() {
+            let create_info = vk::ImageViewCreateInfo {
+                s_type: vk::StructureType::IMAGE_VIEW_CREATE_INFO,
+                image: *image,
+                view_type: vk::ImageViewType::TYPE_2D,
+                format,
+                components: vk::ComponentMapping {
+                    r: vk::ComponentSwizzle::IDENTITY,
+                    g: vk::ComponentSwizzle::IDENTITY,
+                    b: vk::ComponentSwizzle::IDENTITY,
+                    a: vk::ComponentSwizzle::IDENTITY,
+                },
+                subresource_range: vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                p_next: std::ptr::null(),
+                flags: vk::ImageViewCreateFlags::empty(),
+                ..Default::default()
+            };
+            let image_view = unsafe {
+                self.handle
+                    .create_image_view(&create_info, None)
+                    .expect("Device hopefully not out of memory")
+            };
+            swapchain_views.push(image_view);
+        }
+        swapchain_views
+    }
+
+    pub fn create_swapchain_loader(&self) -> ash::khr::swapchain::Device {
+        ash::khr::swapchain::Device::new(&self.instance.handle, &self.handle)
     }
 
     pub fn create_semaphore(&self) -> vk::Semaphore {
@@ -510,7 +568,7 @@ impl Device {
         let image_barrier = vk::ImageMemoryBarrier2 {
             s_type: vk::StructureType::IMAGE_MEMORY_BARRIER_2,
             p_next: std::ptr::null(),
-            //TODO all commands is not very performant -> make it more specific at some point
+            //TODO: all commands is not very performant -> make it more specific at some point
             // refer to https://github.com/KhronosGroup/Vulkan-Docs/wiki/Synchronization-Examples
             src_stage_mask: vk::PipelineStageFlags2::ALL_COMMANDS,
             src_access_mask: vk::AccessFlags2::MEMORY_WRITE,

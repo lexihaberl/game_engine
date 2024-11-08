@@ -257,44 +257,6 @@ impl Surface {
             }
         }
     }
-    fn create_image_views(
-        device: &ash::Device,
-        format: vk::Format,
-        swapchain_images: &[vk::Image],
-    ) -> Vec<vk::ImageView> {
-        let mut swapchain_views: Vec<vk::ImageView> = Vec::with_capacity(swapchain_images.len());
-        for image in swapchain_images.iter() {
-            let create_info = vk::ImageViewCreateInfo {
-                s_type: vk::StructureType::IMAGE_VIEW_CREATE_INFO,
-                image: *image,
-                view_type: vk::ImageViewType::TYPE_2D,
-                format,
-                components: vk::ComponentMapping {
-                    r: vk::ComponentSwizzle::IDENTITY,
-                    g: vk::ComponentSwizzle::IDENTITY,
-                    b: vk::ComponentSwizzle::IDENTITY,
-                    a: vk::ComponentSwizzle::IDENTITY,
-                },
-                subresource_range: vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                p_next: std::ptr::null(),
-                flags: vk::ImageViewCreateFlags::empty(),
-                ..Default::default()
-            };
-            let image_view = unsafe {
-                device
-                    .create_image_view(&create_info, None)
-                    .expect("Device hopefully not out of memory")
-            };
-            swapchain_views.push(image_view);
-        }
-        swapchain_views
-    }
 
     pub fn create_swapchain(
         self: &Arc<Self>,
@@ -313,12 +275,12 @@ impl Surface {
             image_count = image_count.min(support_details.capabilities.max_image_count);
         }
 
-        let indices_array = [
-            device.graphics_queue_family_idx,
-            device.presentation_queue_family_idx,
-        ];
+        let graphics_queue_family_idx = device.get_graphics_queue_idx();
+        let presentation_queue_family_idx = device.get_presentation_queue_idx();
+
+        let indices_array = [graphics_queue_family_idx, presentation_queue_family_idx];
         let (image_sharing_mode, queue_fam_index_count, p_queue_fam_indices) =
-            if device.graphics_queue_family_idx != device.presentation_queue_family_idx {
+            if graphics_queue_family_idx != presentation_queue_family_idx {
                 (vk::SharingMode::CONCURRENT, 2, indices_array.as_ptr())
             } else {
                 (vk::SharingMode::EXCLUSIVE, 0, std::ptr::null())
@@ -346,8 +308,7 @@ impl Surface {
             ..Default::default()
         };
 
-        let swapchain_loader =
-            ash::khr::swapchain::Device::new(&self.instance.handle, &device.handle);
+        let swapchain_loader = device.create_swapchain_loader();
         let swapchain = unsafe {
             swapchain_loader
                 .create_swapchain(&create_info, None)
@@ -358,10 +319,10 @@ impl Surface {
                 .get_swapchain_images(swapchain)
                 .expect("Device should not be out of memory")
         };
-        let image_views =
-            Self::create_image_views(&device.handle, surface_format.format, &swapchain_images);
+        let image_views = device.create_image_views(surface_format.format, &swapchain_images);
 
-        let presentation_queue = device.presentation_queue;
+        let presentation_queue = device.get_presentation_queue();
+
         Swapchain {
             device,
             surface: self.clone(),
@@ -447,7 +408,7 @@ impl Drop for Swapchain {
     fn drop(&mut self) {
         unsafe {
             for image_view in self.image_views.iter() {
-                self.device.handle.destroy_image_view(*image_view, None);
+                self.device.destroy_image_view(*image_view);
             }
             self.swapchain_loader
                 .destroy_swapchain(self.swapchain, None);
