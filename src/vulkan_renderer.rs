@@ -131,9 +131,7 @@ impl VulkanRenderer {
 
         let device = Device::new(instance.clone(), &physical_device, &surface);
 
-        let swapchain = Swapchain::new(
-            instance.clone(),
-            surface.clone(),
+        let swapchain = surface.create_swapchain(
             &physical_device,
             device.clone(),
             window.inner_size().to_logical(window.scale_factor()),
@@ -167,10 +165,9 @@ impl VulkanRenderer {
             .wait_for_fence(&current_frame.in_flight_fence, 1_000_000_000); //1E9 ns -> 1s
         self.device.reset_fence(&current_frame.in_flight_fence);
 
-        let image_index = self
+        let (image_index, image) = self
             .swapchain
             .acquire_next_image(current_frame.image_available_semaphore, 1_000_000_000);
-        let image = self.swapchain.images[image_index as usize];
 
         let command_buffer = current_frame.command_buffer;
         // commands are finished -> can reset command buffer

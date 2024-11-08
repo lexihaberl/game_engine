@@ -1,6 +1,5 @@
 use super::instance::Instance;
 use super::instance::Version;
-use super::swapchain::SwapChainSupportDetails;
 use super::window::Surface;
 use ash::vk;
 use std::cmp::Reverse;
@@ -91,8 +90,7 @@ impl PhysicalDeviceSelector {
 
         let mut swapchain_adequate = false;
         if extensions_supported {
-            let swap_chain_support =
-                SwapChainSupportDetails::query_support_details(surface, device);
+            let swap_chain_support = surface.query_support_details(device);
             swapchain_adequate = !swap_chain_support.surface_formats.is_empty()
                 && !swap_chain_support.present_modes.is_empty();
         }
@@ -225,12 +223,7 @@ fn find_queue_families(
         {
             queue_family_indices.graphics_family = Some(idx as u32);
         }
-        if unsafe {
-            surface
-                .loader
-                .get_physical_device_surface_support(*device, idx as u32, surface.handle)
-                .expect("Host does not have enough resources or smth")
-        } {
+        if surface.get_physical_device_surface_support(device, idx as u32) {
             queue_family_indices.presentation_family = Some(idx as u32);
         }
     }
