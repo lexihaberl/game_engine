@@ -19,12 +19,8 @@ impl PhysicalDeviceSelector {
     }
 
     pub fn select(&self, instance: Arc<Instance>, surface: &Surface) -> vk::PhysicalDevice {
-        let physical_devices = unsafe {
-            instance
-                .handle
-                .enumerate_physical_devices()
-                .expect("We hopefully have enough memory to handle this call")
-        };
+        let physical_devices = instance.enumerate_physical_devices();
+
         log::info!(
             "Found {} devices with Vulkan support",
             physical_devices.len()
@@ -33,19 +29,13 @@ impl PhysicalDeviceSelector {
         let mut suitable_devices: Vec<vk::PhysicalDevice> = physical_devices
             .into_iter()
             .filter(|device| {
-                Self::is_device_suitable(
-                    &instance.handle,
-                    device,
-                    surface,
-                    self.minimum_vulkan_version,
-                )
+                Self::is_device_suitable(&instance, device, surface, self.minimum_vulkan_version)
             })
             .collect();
         log::info!("Found {} suitable devices", suitable_devices.len());
 
-        suitable_devices.sort_by_key(|device| {
-            Reverse(self.get_device_suitability_score(&instance.handle, *device))
-        });
+        suitable_devices
+            .sort_by_key(|device| Reverse(self.get_device_suitability_score(&instance, *device)));
 
         if suitable_devices.is_empty() {
             panic!("No suitable devices found!")
@@ -53,11 +43,7 @@ impl PhysicalDeviceSelector {
 
         let chosen_device = suitable_devices[0];
 
-        let device_properties = unsafe {
-            instance
-                .handle
-                .get_physical_device_properties(chosen_device)
-        };
+        let device_properties = instance.get_physical_device_properties(chosen_device);
         let device_name = device_properties.device_name_as_c_str().expect(
             "Should be able to convert device name to c_str since its a string coming from a C API",
         );
@@ -68,19 +54,19 @@ impl PhysicalDeviceSelector {
     }
 
     fn is_device_suitable(
-        instance: &ash::Instance,
+        instance: &Arc<Instance>,
         device: &vk::PhysicalDevice,
         surface: &Surface,
         minimum_vulkan_version: Version,
     ) -> bool {
-        let device_properties = unsafe { instance.get_physical_device_properties(*device) };
+        let device_properties = instance.get_physical_device_properties(*device);
         let min_version_vk = minimum_vulkan_version.to_api_version();
 
         if min_version_vk > device_properties.api_version {
             return false;
         }
 
-        let queue_families_supported = find_queue_families(instance, device, surface).is_complete();
+        let queue_families_supported = instance.find_queue_families(device, surface).is_complete();
 
         //TODO: handle extensions/features/swap_chain_support better, s.t. you dont have to specify
         //stuff twice
@@ -101,15 +87,11 @@ impl PhysicalDeviceSelector {
     }
 
     fn check_device_extension_support(
-        instance: &ash::Instance,
+        instance: &Arc<Instance>,
         device: &vk::PhysicalDevice,
         required_extensions: &[&str],
     ) -> bool {
-        let supported_extensions = unsafe {
-            instance
-                .enumerate_device_extension_properties(*device)
-                .expect("Could not enumerate device extension properties")
-        };
+        let supported_extensions = instance.enumerate_device_extension_properties(*device);
         let cross_section = supported_extensions.iter().filter(|extension_prop| {
             required_extensions.contains(
                 &extension_prop
@@ -122,47 +104,10 @@ impl PhysicalDeviceSelector {
         cross_section.count() == required_extensions.len()
     }
 
-    fn get_supported_features<'a>(
-        instance: &ash::Instance,
-        device: &vk::PhysicalDevice,
-    ) -> DeviceFeatures<'a> {
-        let mut vulkan11_feats = vk::PhysicalDeviceVulkan11Features {
-            s_type: vk::StructureType::PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-            ..Default::default()
-        };
-        let mut vulkan12_feats = vk::PhysicalDeviceVulkan12Features {
-            s_type: vk::StructureType::PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-            p_next: &mut vulkan11_feats as *mut _ as *mut std::ffi::c_void,
-            ..Default::default()
-        };
-        let mut vulkan13_feats = vk::PhysicalDeviceVulkan13Features {
-            s_type: vk::StructureType::PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-            p_next: &mut vulkan12_feats as *mut _ as *mut std::ffi::c_void,
-            ..Default::default()
-        };
-        let device_features = vk::PhysicalDeviceFeatures {
-            ..Default::default()
-        };
-        let mut feature2 = vk::PhysicalDeviceFeatures2 {
-            s_type: vk::StructureType::PHYSICAL_DEVICE_FEATURES_2,
-            p_next: &mut vulkan13_feats as *mut _ as *mut std::ffi::c_void,
-            features: device_features,
-            ..Default::default()
-        };
-
-        unsafe { instance.get_physical_device_features2(*device, &mut feature2) };
-        DeviceFeatures {
-            vulkan11_features: vulkan11_feats,
-            vulkan12_features: vulkan12_feats,
-            vulkan13_features: vulkan13_feats,
-            base_features: device_features,
-        }
-    }
-
-    fn check_feature_support(instance: &ash::Instance, device: &vk::PhysicalDevice) -> bool {
+    fn check_feature_support(instance: &Arc<Instance>, device: &vk::PhysicalDevice) -> bool {
         //TODO: at some point: pass required features via param -> and check whether these
         //arbitrary features are supported
-        let supported_features = Self::get_supported_features(instance, device);
+        let supported_features = instance.get_supported_features(device);
 
         let vulkan12_features = supported_features.vulkan12_features;
         let vulkan13_features = supported_features.vulkan13_features;
@@ -175,10 +120,10 @@ impl PhysicalDeviceSelector {
 
     fn get_device_suitability_score(
         &self,
-        instance: &ash::Instance,
+        instance: &Arc<Instance>,
         device: vk::PhysicalDevice,
     ) -> u64 {
-        let device_properties = unsafe { instance.get_physical_device_properties(device) };
+        let device_properties = instance.get_physical_device_properties(device);
         let mut score = 0;
         score += match device_properties.device_type {
             vk::PhysicalDeviceType::DISCRETE_GPU => 1000,
@@ -188,46 +133,6 @@ impl PhysicalDeviceSelector {
         };
         score
     }
-}
-
-#[derive(Debug)]
-struct QueueFamilyIndices {
-    graphics_family: Option<u32>,
-    presentation_family: Option<u32>,
-}
-
-impl QueueFamilyIndices {
-    fn new() -> Self {
-        QueueFamilyIndices {
-            graphics_family: None,
-            presentation_family: None,
-        }
-    }
-    fn is_complete(&self) -> bool {
-        self.graphics_family.is_some() && self.presentation_family.is_some()
-    }
-}
-
-fn find_queue_families(
-    instance: &ash::Instance,
-    device: &vk::PhysicalDevice,
-    surface: &Surface,
-) -> QueueFamilyIndices {
-    let queue_family_properties =
-        unsafe { instance.get_physical_device_queue_family_properties(*device) };
-    let mut queue_family_indices = QueueFamilyIndices::new();
-    for (idx, queue_family_property) in queue_family_properties.iter().enumerate() {
-        if queue_family_property
-            .queue_flags
-            .contains(vk::QueueFlags::GRAPHICS)
-        {
-            queue_family_indices.graphics_family = Some(idx as u32);
-        }
-        if surface.get_physical_device_surface_support(device, idx as u32) {
-            queue_family_indices.presentation_family = Some(idx as u32);
-        }
-    }
-    queue_family_indices
 }
 
 #[allow(dead_code)]
@@ -255,7 +160,7 @@ impl Device {
         //required_extensions: &[&str],
         surface: &Surface,
     ) -> Arc<Self> {
-        let queue_family_indices = find_queue_families(&instance.handle, physical_device, surface);
+        let queue_family_indices = instance.find_queue_families(physical_device, surface);
         let graphics_q_fam_idx = queue_family_indices
             .graphics_family
             .expect("Q should exist since we checked for device suitabiity");
@@ -326,12 +231,7 @@ impl Device {
             flags: vk::DeviceCreateFlags::empty(),
             ..Default::default()
         };
-        let logical_device = unsafe {
-            instance
-                .handle
-                .create_device(*physical_device, &device_create_info, None)
-                .expect("Device should hopefully not be out of memory already. Features and Extensions should be supported (checked during device suitability test)!")
-        };
+        let logical_device = instance.create_logical_device(physical_device, &device_create_info);
         let graphics_queue = unsafe { logical_device.get_device_queue(graphics_q_fam_idx, 0) };
         let presentation_queue = unsafe { logical_device.get_device_queue(present_q_fam_idx, 0) };
 
@@ -444,7 +344,7 @@ impl Device {
     }
 
     pub fn create_swapchain_loader(&self) -> ash::khr::swapchain::Device {
-        ash::khr::swapchain::Device::new(&self.instance.handle, &self.handle)
+        self.instance.create_swapchain_loader(&self.handle)
     }
 
     pub fn create_semaphore(&self) -> vk::Semaphore {

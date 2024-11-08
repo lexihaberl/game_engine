@@ -1,11 +1,18 @@
+use super::device::DeviceFeatures;
+use super::window::Surface;
+use ash::ext::debug_utils;
+use ash::khr::{android_surface, wayland_surface, win32_surface, xcb_surface, xlib_surface};
 use ash::vk;
+use ash::vk::SurfaceKHR;
+use raw_window_handle::RawDisplayHandle;
+use raw_window_handle::RawWindowHandle;
 use std::ffi::c_char;
 use std::ffi::CString;
 use std::sync::Arc;
 
 pub struct Instance {
-    pub entry: ash::Entry,
-    pub handle: ash::Instance,
+    entry: ash::Entry,
+    handle: ash::Instance,
 }
 
 #[derive(Copy, Clone)]
@@ -147,6 +154,215 @@ impl Instance {
             handle: instance,
         })
     }
+
+    pub fn enumerate_physical_devices(&self) -> Vec<vk::PhysicalDevice> {
+        unsafe {
+            self.handle
+                .enumerate_physical_devices()
+                .expect("We hopefully have enough memory to handle this call")
+        }
+    }
+
+    pub fn get_physical_device_properties(
+        &self,
+        physical_device: vk::PhysicalDevice,
+    ) -> vk::PhysicalDeviceProperties {
+        unsafe { self.handle.get_physical_device_properties(physical_device) }
+    }
+
+    pub fn get_physical_device_queue_family_properties(
+        &self,
+        physical_device: &vk::PhysicalDevice,
+    ) -> Vec<vk::QueueFamilyProperties> {
+        unsafe {
+            self.handle
+                .get_physical_device_queue_family_properties(*physical_device)
+        }
+    }
+
+    pub fn enumerate_device_extension_properties(
+        &self,
+        physical_device: vk::PhysicalDevice,
+    ) -> Vec<vk::ExtensionProperties> {
+        unsafe {
+            self.handle
+                .enumerate_device_extension_properties(physical_device)
+                .expect("We hopefully have enough memory to handle this call")
+        }
+    }
+
+    pub fn get_supported_features<'a>(&self, device: &vk::PhysicalDevice) -> DeviceFeatures<'a> {
+        let mut vulkan11_feats = vk::PhysicalDeviceVulkan11Features {
+            s_type: vk::StructureType::PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+            ..Default::default()
+        };
+        let mut vulkan12_feats = vk::PhysicalDeviceVulkan12Features {
+            s_type: vk::StructureType::PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+            p_next: &mut vulkan11_feats as *mut _ as *mut std::ffi::c_void,
+            ..Default::default()
+        };
+        let mut vulkan13_feats = vk::PhysicalDeviceVulkan13Features {
+            s_type: vk::StructureType::PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+            p_next: &mut vulkan12_feats as *mut _ as *mut std::ffi::c_void,
+            ..Default::default()
+        };
+        let device_features = vk::PhysicalDeviceFeatures {
+            ..Default::default()
+        };
+        let mut feature2 = vk::PhysicalDeviceFeatures2 {
+            s_type: vk::StructureType::PHYSICAL_DEVICE_FEATURES_2,
+            p_next: &mut vulkan13_feats as *mut _ as *mut std::ffi::c_void,
+            features: device_features,
+            ..Default::default()
+        };
+
+        unsafe {
+            self.handle
+                .get_physical_device_features2(*device, &mut feature2)
+        };
+        DeviceFeatures {
+            vulkan11_features: vulkan11_feats,
+            vulkan12_features: vulkan12_feats,
+            vulkan13_features: vulkan13_feats,
+            base_features: device_features,
+        }
+    }
+
+    pub fn create_logical_device(
+        &self,
+        device: &vk::PhysicalDevice,
+        device_create_info: &vk::DeviceCreateInfo,
+    ) -> ash::Device {
+        unsafe {
+            self.handle
+                .create_device(*device, device_create_info, None)
+                .expect("Device should hopefully not be out of memory already. Features and Extensions should be supported (checked during device suitability test)!")
+        }
+    }
+
+    pub fn find_queue_families(
+        &self,
+        device: &vk::PhysicalDevice,
+        surface: &Surface,
+    ) -> QueueFamilyIndices {
+        let queue_family_properties = self.get_physical_device_queue_family_properties(device);
+        let mut queue_family_indices = QueueFamilyIndices::new();
+        for (idx, queue_family_property) in queue_family_properties.iter().enumerate() {
+            if queue_family_property
+                .queue_flags
+                .contains(vk::QueueFlags::GRAPHICS)
+            {
+                queue_family_indices.graphics_family = Some(idx as u32);
+            }
+            if surface.get_physical_device_surface_support(device, idx as u32) {
+                queue_family_indices.presentation_family = Some(idx as u32);
+            }
+        }
+        queue_family_indices
+    }
+
+    pub fn create_swapchain_loader(&self, device: &ash::Device) -> ash::khr::swapchain::Device {
+        ash::khr::swapchain::Device::new(&self.handle, device)
+    }
+
+    pub fn create_debug_utils_instance(&self) -> debug_utils::Instance {
+        debug_utils::Instance::new(&self.entry, &self.handle)
+    }
+
+    pub fn create_surface(
+        &self,
+        display_handle: RawDisplayHandle,
+        window_handle: RawWindowHandle,
+        allocation_callbacks: Option<&vk::AllocationCallbacks<'_>>,
+    ) -> SurfaceKHR {
+        let surface_opt = match (display_handle, window_handle) {
+            (RawDisplayHandle::Windows(_), RawWindowHandle::Win32(window)) => {
+                let surface_desc = vk::Win32SurfaceCreateInfoKHR::default()
+                    .hwnd(window.hwnd.get())
+                    .hinstance(
+                        window
+                            .hinstance
+                            .expect("Win32 hinstance should be available!")
+                            .get(),
+                    );
+                let surface_fn = win32_surface::Instance::new(&self.entry, &self.handle);
+                unsafe { surface_fn.create_win32_surface(&surface_desc, allocation_callbacks) }
+            }
+
+            (RawDisplayHandle::Wayland(display), RawWindowHandle::Wayland(window)) => {
+                let surface_desc = vk::WaylandSurfaceCreateInfoKHR::default()
+                    .display(display.display.as_ptr())
+                    .surface(window.surface.as_ptr());
+                let surface_fn = wayland_surface::Instance::new(&self.entry, &self.handle);
+                unsafe { surface_fn.create_wayland_surface(&surface_desc, allocation_callbacks) }
+            }
+
+            (RawDisplayHandle::Xlib(display), RawWindowHandle::Xlib(window)) => {
+                let surface_desc = vk::XlibSurfaceCreateInfoKHR::default()
+                    .dpy(
+                        display
+                            .display
+                            .expect("Xlib display should be available!")
+                            .as_ptr(),
+                    )
+                    .window(window.window);
+                let surface_fn = xlib_surface::Instance::new(&self.entry, &self.handle);
+                unsafe { surface_fn.create_xlib_surface(&surface_desc, allocation_callbacks) }
+            }
+
+            (RawDisplayHandle::Xcb(display), RawWindowHandle::Xcb(window)) => {
+                let surface_desc = vk::XcbSurfaceCreateInfoKHR::default()
+                    .connection(
+                        display
+                            .connection
+                            .expect("Xcb connection should be available!")
+                            .as_ptr(),
+                    )
+                    .window(window.window.get());
+                let surface_fn = xcb_surface::Instance::new(&self.entry, &self.handle);
+                unsafe { surface_fn.create_xcb_surface(&surface_desc, allocation_callbacks) }
+            }
+
+            (RawDisplayHandle::Android(_), RawWindowHandle::AndroidNdk(window)) => {
+                let surface_desc = vk::AndroidSurfaceCreateInfoKHR::default()
+                    .window(window.a_native_window.as_ptr());
+                let surface_fn = android_surface::Instance::new(&self.entry, &self.handle);
+                unsafe { surface_fn.create_android_surface(&surface_desc, allocation_callbacks) }
+            }
+
+            // #[cfg(target_os = "macos")]
+            // (RawDisplayHandle::AppKit(_), RawWindowHandle::AppKit(window)) => {
+            //     use raw_window_metal::{appkit, Layer};
+            //
+            //     let layer = match appkit::metal_layer_from_handle(window) {
+            //         Layer::Existing(layer) | Layer::Allocated(layer) => layer.cast(),
+            //     };
+            //
+            //     let surface_desc = vk::MetalSurfaceCreateInfoEXT::default().layer(&*layer);
+            //     let surface_fn = metal_surface::Instance::new(entry, instance);
+            //     surface_fn.create_metal_surface(&surface_desc, allocation_callbacks)
+            // }
+            //
+            // #[cfg(target_os = "ios")]
+            // (RawDisplayHandle::UiKit(_), RawWindowHandle::UiKit(window)) => {
+            //     use raw_window_metal::{uikit, Layer};
+            //
+            //     let layer = match uikit::metal_layer_from_handle(window) {
+            //         Layer::Existing(layer) | Layer::Allocated(layer) => layer.cast(),
+            //     };
+            //
+            //     let surface_desc = vk::MetalSurfaceCreateInfoEXT::default().layer(&*layer);
+            //     let surface_fn = metal_surface::Instance::new(entry, instance);
+            //     surface_fn.create_metal_surface(&surface_desc, allocation_callbacks)
+            // }
+            _ => panic!("Unsupported display handle"),
+        };
+        surface_opt.expect("Device should have enough memory!")
+    }
+
+    pub fn create_surface_loader(&self) -> ash::khr::surface::Instance {
+        ash::khr::surface::Instance::new(&self.entry, &self.handle)
+    }
 }
 
 impl Drop for Instance {
@@ -155,5 +371,23 @@ impl Drop for Instance {
         unsafe {
             self.handle.destroy_instance(None);
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct QueueFamilyIndices {
+    pub graphics_family: Option<u32>,
+    pub presentation_family: Option<u32>,
+}
+
+impl QueueFamilyIndices {
+    fn new() -> Self {
+        QueueFamilyIndices {
+            graphics_family: None,
+            presentation_family: None,
+        }
+    }
+    pub fn is_complete(&self) -> bool {
+        self.graphics_family.is_some() && self.presentation_family.is_some()
     }
 }

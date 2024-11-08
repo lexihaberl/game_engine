@@ -15,8 +15,8 @@ use winit::window::Window;
 
 pub struct FrameData {
     device: Arc<Device>,
-    pub command_pool: vk::CommandPool,
-    pub command_buffer: vk::CommandBuffer,
+    command_pool: vk::CommandPool,
+    command_buffer: vk::CommandBuffer,
     image_available_semaphore: vk::Semaphore,
     result_presentable_semaphore: vk::Semaphore,
     in_flight_fence: vk::Fence,

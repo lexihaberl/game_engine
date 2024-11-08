@@ -40,8 +40,9 @@ pub unsafe extern "system" fn vulkan_debug_callback(
 }
 
 pub struct DebugMessenger {
-    instance: Arc<Instance>,
+    _instance: Arc<Instance>,
     messenger: vk::DebugUtilsMessengerEXT,
+    debug_utils_instance: debug_utils::Instance,
 }
 
 impl DebugMessenger {
@@ -64,15 +65,16 @@ impl DebugMessenger {
     }
     pub fn new(instance: Arc<Instance>) -> DebugMessenger {
         let create_info = Self::fill_create_info();
-        let debug_utils_instance = debug_utils::Instance::new(&instance.entry, &instance.handle);
+        let debug_utils_instance = instance.create_debug_utils_instance();
         let messenger = unsafe {
             debug_utils_instance
                 .create_debug_utils_messenger(&create_info, None)
                 .expect("Device should not be out of memory this early!")
         };
         DebugMessenger {
-            instance,
+            _instance: instance,
             messenger,
+            debug_utils_instance,
         }
     }
 }
@@ -81,9 +83,8 @@ impl Drop for DebugMessenger {
     fn drop(&mut self) {
         log::debug!("Destroying debug messenger!");
         unsafe {
-            let debug_utils_instance =
-                debug_utils::Instance::new(&self.instance.entry, &self.instance.handle);
-            debug_utils_instance.destroy_debug_utils_messenger(self.messenger, None);
+            self.debug_utils_instance
+                .destroy_debug_utils_messenger(self.messenger, None);
         }
     }
 }
