@@ -9,6 +9,7 @@ use crate::vulkan_rs::Surface;
 use crate::vulkan_rs::Swapchain;
 use crate::vulkan_rs::Version;
 use ash::vk;
+use gpu_allocator::vulkan::*;
 use raw_window_handle::HasDisplayHandle;
 use std::sync::Arc;
 use winit::window::Window;
@@ -54,6 +55,8 @@ impl Drop for FrameData {
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 pub struct VulkanRenderer {
+    // allocator first so that it is dropped before the instances etc.
+    allocator: Allocator,
     #[allow(dead_code)]
     instance: Arc<Instance>,
     #[allow(dead_code)]
@@ -142,8 +145,11 @@ impl VulkanRenderer {
             frame_data.push(FrameData::new(device.clone()));
         }
 
+        let allocator = device.create_allocator();
+
         VulkanRenderer {
             surface,
+            allocator,
             instance,
             debug_messenger,
             physical_device,

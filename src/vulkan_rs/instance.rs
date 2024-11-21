@@ -4,6 +4,7 @@ use ash::ext::debug_utils;
 use ash::khr::{android_surface, wayland_surface, win32_surface, xcb_surface, xlib_surface};
 use ash::vk;
 use ash::vk::SurfaceKHR;
+use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use raw_window_handle::RawDisplayHandle;
 use raw_window_handle::RawWindowHandle;
 use std::ffi::c_char;
@@ -362,6 +363,22 @@ impl Instance {
 
     pub fn create_surface_loader(&self) -> ash::khr::surface::Instance {
         ash::khr::surface::Instance::new(&self.entry, &self.handle)
+    }
+
+    pub fn create_allocator(
+        &self,
+        physical_device: vk::PhysicalDevice,
+        device: ash::Device,
+    ) -> Allocator {
+        Allocator::new(&AllocatorCreateDesc {
+            instance: self.handle.clone(),
+            device,
+            physical_device,
+            debug_settings: Default::default(),
+            buffer_device_address: true,
+            allocation_sizes: Default::default(),
+        })
+        .expect("I dont even know what most of these errors mean. So :shrug:")
     }
 }
 

@@ -2,6 +2,7 @@ use super::instance::Instance;
 use super::instance::Version;
 use super::window::Surface;
 use ash::vk;
+use gpu_allocator::vulkan::Allocator;
 use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::ffi::c_char;
@@ -145,6 +146,7 @@ pub struct DeviceFeatures<'a> {
 
 pub struct Device {
     instance: Arc<Instance>,
+    physical_device: vk::PhysicalDevice,
     handle: ash::Device,
     graphics_queue: vk::Queue,
     graphics_queue_family_idx: u32,
@@ -237,6 +239,7 @@ impl Device {
 
         Arc::new(Device {
             instance,
+            physical_device: *physical_device,
             handle: logical_device,
             graphics_queue,
             graphics_queue_family_idx: graphics_q_fam_idx,
@@ -532,6 +535,11 @@ impl Device {
                 .device_wait_idle()
                 .expect("I pray that I never run out of memory");
         }
+    }
+
+    pub fn create_allocator(&self) -> Allocator {
+        self.instance
+            .create_allocator(self.physical_device, self.handle.clone())
     }
 }
 
