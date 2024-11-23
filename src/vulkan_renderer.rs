@@ -1,5 +1,7 @@
 use crate::vulkan_rs::debug;
 use crate::vulkan_rs::window;
+use crate::vulkan_rs::AllocatedImage;
+use crate::vulkan_rs::Allocator;
 use crate::vulkan_rs::AppInfo;
 use crate::vulkan_rs::Device;
 use crate::vulkan_rs::EngineInfo;
@@ -9,9 +11,9 @@ use crate::vulkan_rs::Surface;
 use crate::vulkan_rs::Swapchain;
 use crate::vulkan_rs::Version;
 use ash::vk;
-use gpu_allocator::vulkan::*;
 use raw_window_handle::HasDisplayHandle;
 use std::sync::Arc;
+use std::sync::Mutex;
 use winit::window::Window;
 
 pub struct FrameData {
@@ -55,8 +57,8 @@ impl Drop for FrameData {
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 pub struct VulkanRenderer {
-    // allocator first so that it is dropped before the instances etc.
-    allocator: Allocator,
+    #[allow(dead_code)]
+    allocator: Arc<Mutex<Allocator>>,
     #[allow(dead_code)]
     instance: Arc<Instance>,
     #[allow(dead_code)]
@@ -69,6 +71,7 @@ pub struct VulkanRenderer {
     swapchain: Swapchain,
     frame_data: Vec<FrameData>,
     frame_index: usize,
+    draw_image: AllocatedImage,
 }
 
 impl VulkanRenderer {
@@ -145,7 +148,25 @@ impl VulkanRenderer {
             frame_data.push(FrameData::new(device.clone()));
         }
 
-        let allocator = device.create_allocator();
+        let allocator = Allocator::new(device.clone());
+
+        let draw_extent = vk::Extent3D {
+            width: window.inner_size().width,
+            height: window.inner_size().height,
+            depth: 1,
+        };
+        let draw_image_usage = vk::ImageUsageFlags::COLOR_ATTACHMENT
+            | vk::ImageUsageFlags::TRANSFER_SRC
+            | vk::ImageUsageFlags::TRANSFER_DST
+            | vk::ImageUsageFlags::STORAGE;
+        let draw_image = AllocatedImage::new(
+            device.clone(),
+            allocator.clone(),
+            vk::Format::R16G16B16A16_SFLOAT,
+            draw_image_usage,
+            draw_extent,
+            vk::ImageAspectFlags::COLOR,
+        );
 
         VulkanRenderer {
             surface,
@@ -157,6 +178,7 @@ impl VulkanRenderer {
             swapchain,
             frame_data,
             frame_index: 0,
+            draw_image,
         }
     }
 
@@ -171,23 +193,75 @@ impl VulkanRenderer {
             .wait_for_fence(&current_frame.in_flight_fence, 1_000_000_000); //1E9 ns -> 1s
         self.device.reset_fence(&current_frame.in_flight_fence);
 
-        let (image_index, image) = self
+        let (presentation_image_index, presentation_image) = self
             .swapchain
             .acquire_next_image(current_frame.image_available_semaphore, 1_000_000_000);
+        let presentation_extent = self.swapchain.extent();
 
         let command_buffer = current_frame.command_buffer;
         // commands are finished -> can reset command buffer
         self.device.reset_command_buffer(command_buffer);
+
+        // draw into image with higher precision before presenting results -> more accurate colors
+        let draw_image = self.draw_image.image();
+        let draw_extent = self.draw_image.extent();
+        let draw_extent = vk::Extent2D {
+            width: draw_extent.width,
+            height: draw_extent.height,
+        };
 
         // start recording commands
         self.device
             .begin_command_buffer(command_buffer, vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
         self.device.transition_image_layout(
             command_buffer,
-            image,
+            draw_image,
             vk::ImageLayout::UNDEFINED,
             vk::ImageLayout::GENERAL,
         );
+
+        self.draw_background(command_buffer, draw_image);
+
+        self.device.transition_image_layout(
+            command_buffer,
+            draw_image,
+            vk::ImageLayout::GENERAL,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+        );
+
+        self.device.transition_image_layout(
+            command_buffer,
+            presentation_image,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        );
+
+        self.device.copy_image_to_image(
+            command_buffer,
+            draw_image,
+            presentation_image,
+            draw_extent,
+            presentation_extent,
+        );
+
+        self.device.transition_image_layout(
+            command_buffer,
+            presentation_image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::ImageLayout::PRESENT_SRC_KHR,
+        );
+
+        self.device.end_command_buffer(command_buffer);
+
+        self.submit_to_queue(current_frame, current_frame.in_flight_fence);
+        self.swapchain.present_image(
+            current_frame.result_presentable_semaphore,
+            presentation_image_index,
+        );
+        self.frame_index += 1;
+    }
+
+    pub fn draw_background(&self, command_buffer: vk::CommandBuffer, image: vk::Image) {
         let flash_color = (self.frame_index as f32 / 100.0).sin().abs();
         let clear_value = vk::ClearColorValue {
             float32: [0.0, 0.0, flash_color, 1.0],
@@ -198,17 +272,6 @@ impl VulkanRenderer {
             vk::ImageLayout::GENERAL,
             &clear_value,
         );
-        self.device.transition_image_layout(
-            command_buffer,
-            image,
-            vk::ImageLayout::GENERAL,
-            vk::ImageLayout::PRESENT_SRC_KHR,
-        );
-        self.device.end_command_buffer(command_buffer);
-        self.submit_to_queue(current_frame, current_frame.in_flight_fence);
-        self.swapchain
-            .present_image(current_frame.result_presentable_semaphore, image_index);
-        self.frame_index += 1;
     }
 
     fn submit_to_queue(&self, current_frame: &FrameData, fence: vk::Fence) {

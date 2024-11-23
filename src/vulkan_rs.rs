@@ -1,9 +1,12 @@
+pub mod allocation;
 pub mod debug;
 pub mod device;
 mod instance;
 mod utils;
 pub mod window;
 
+pub use allocation::AllocatedImage;
+pub use allocation::Allocator;
 pub use device::Device;
 pub use device::PhysicalDeviceSelector;
 pub use instance::AppInfo;

@@ -301,6 +301,10 @@ impl Swapchain {
                 .expect("Failed to present image");
         }
     }
+
+    pub fn extent(&self) -> vk::Extent2D {
+        self.extent
+    }
 }
 
 impl Drop for Swapchain {

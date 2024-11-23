@@ -301,9 +301,68 @@ impl Device {
         self.presentation_queue
     }
 
-    pub fn destroy_image_view(&self, image_view: vk::ImageView) {
+    pub fn create_image(
+        &self,
+        format: vk::Format,
+        usage_flags: vk::ImageUsageFlags,
+        extent: vk::Extent3D,
+    ) -> vk::Image {
+        let image_create_info = vk::ImageCreateInfo {
+            s_type: vk::StructureType::IMAGE_CREATE_INFO,
+            p_next: std::ptr::null(),
+            image_type: vk::ImageType::TYPE_2D,
+            format,
+            extent,
+            mip_levels: 1,
+            array_layers: 1,
+            samples: vk::SampleCountFlags::TYPE_1,
+            tiling: vk::ImageTiling::OPTIMAL,
+            usage: usage_flags,
+            ..Default::default()
+        };
+
         unsafe {
-            self.handle.destroy_image_view(image_view, None);
+            self.handle
+                .create_image(&image_create_info, None)
+                .expect("Device hopefully not out of memory")
+        }
+    }
+
+    pub fn destroy_image(&self, image: vk::Image) {
+        unsafe {
+            self.handle.destroy_image(image, None);
+        }
+    }
+
+    pub fn get_image_memory_requirements(&self, image: vk::Image) -> vk::MemoryRequirements {
+        unsafe { self.handle.get_image_memory_requirements(image) }
+    }
+
+    pub fn create_image_view(
+        &self,
+        image: vk::Image,
+        format: vk::Format,
+        aspect_flags: vk::ImageAspectFlags,
+    ) -> vk::ImageView {
+        let image_view_create_info = vk::ImageViewCreateInfo {
+            s_type: vk::StructureType::IMAGE_VIEW_CREATE_INFO,
+            p_next: std::ptr::null(),
+            view_type: vk::ImageViewType::TYPE_2D,
+            image,
+            format,
+            subresource_range: vk::ImageSubresourceRange {
+                aspect_mask: aspect_flags,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+            ..Default::default()
+        };
+        unsafe {
+            self.handle
+                .create_image_view(&image_view_create_info, None)
+                .expect("Device hopefully not out of memory")
         }
     }
 
@@ -344,6 +403,25 @@ impl Device {
             swapchain_views.push(image_view);
         }
         swapchain_views
+    }
+
+    pub fn destroy_image_view(&self, image_view: vk::ImageView) {
+        unsafe {
+            self.handle.destroy_image_view(image_view, None);
+        }
+    }
+
+    pub fn bind_image_memory(
+        &self,
+        image: vk::Image,
+        memory: vk::DeviceMemory,
+        offset: vk::DeviceSize,
+    ) {
+        unsafe {
+            self.handle
+                .bind_image_memory(image, memory, offset)
+                .expect("I pray that host is never out of memory")
+        }
     }
 
     pub fn create_swapchain_loader(&self) -> ash::khr::swapchain::Device {
@@ -518,6 +596,65 @@ impl Device {
                 clear_color,
                 &[image_subresource_range],
             );
+        }
+    }
+
+    pub fn copy_image_to_image(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        src_image: vk::Image,
+        dst_image: vk::Image,
+        src_size: vk::Extent2D,
+        dst_size: vk::Extent2D,
+    ) {
+        let blit_region = vk::ImageBlit2 {
+            s_type: vk::StructureType::IMAGE_BLIT_2,
+            p_next: std::ptr::null(),
+            src_offsets: [
+                vk::Offset3D { x: 0, y: 0, z: 0 },
+                vk::Offset3D {
+                    x: src_size.width as i32,
+                    y: src_size.height as i32,
+                    z: 1,
+                },
+            ],
+            dst_offsets: [
+                vk::Offset3D { x: 0, y: 0, z: 0 },
+                vk::Offset3D {
+                    x: dst_size.width as i32,
+                    y: dst_size.height as i32,
+                    z: 1,
+                },
+            ],
+            src_subresource: vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_array_layer: 0,
+                layer_count: 1,
+                mip_level: 0,
+            },
+            dst_subresource: vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_array_layer: 0,
+                layer_count: 1,
+                mip_level: 0,
+            },
+            ..Default::default()
+        };
+        let blit_info = vk::BlitImageInfo2 {
+            s_type: vk::StructureType::BLIT_IMAGE_INFO_2,
+            p_next: std::ptr::null(),
+            src_image,
+            src_image_layout: vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            dst_image,
+            dst_image_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            filter: vk::Filter::LINEAR,
+            region_count: 1,
+            p_regions: &blit_region,
+            ..Default::default()
+        };
+
+        unsafe {
+            self.handle.cmd_blit_image2(command_buffer, &blit_info);
         }
     }
 
