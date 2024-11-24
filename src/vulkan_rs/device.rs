@@ -678,6 +678,144 @@ impl Device {
         self.instance
             .create_allocator(self.physical_device, self.handle.clone())
     }
+
+    pub fn create_descriptor_set_layout(
+        &self,
+        layout_info: &vk::DescriptorSetLayoutCreateInfo,
+    ) -> vk::DescriptorSetLayout {
+        unsafe {
+            self.handle
+                .create_descriptor_set_layout(layout_info, None)
+                .expect("I pray that I never run out of memory")
+        }
+    }
+
+    pub fn destroy_descriptor_set_layout(&self, layout: vk::DescriptorSetLayout) {
+        unsafe {
+            self.handle.destroy_descriptor_set_layout(layout, None);
+        }
+    }
+
+    pub fn create_descriptor_pool(
+        &self,
+        pool_info: &vk::DescriptorPoolCreateInfo,
+    ) -> vk::DescriptorPool {
+        unsafe {
+            self.handle
+                .create_descriptor_pool(pool_info, None)
+                .expect("I pray that I never run out of memory")
+        }
+    }
+
+    pub fn reset_descriptor_pool(&self, pool: vk::DescriptorPool) {
+        unsafe {
+            self.handle
+                .reset_descriptor_pool(pool, vk::DescriptorPoolResetFlags::empty())
+                .expect("This call never returns errors.");
+        }
+    }
+
+    pub fn destroy_descriptor_pool(&self, pool: vk::DescriptorPool) {
+        unsafe {
+            self.handle.destroy_descriptor_pool(pool, None);
+        }
+    }
+
+    pub fn allocate_descriptor_sets(
+        &self,
+        allocate_info: &vk::DescriptorSetAllocateInfo,
+    ) -> Vec<vk::DescriptorSet> {
+        unsafe {
+            self.handle
+                .allocate_descriptor_sets(allocate_info)
+                .expect("I pray that I never run out of memory")
+        }
+    }
+
+    pub fn update_descriptor_sets(&self, write_sets: &[vk::WriteDescriptorSet]) {
+        unsafe {
+            self.handle.update_descriptor_sets(write_sets, &[]);
+        }
+    }
+
+    pub fn create_shader_module(
+        &self,
+        create_info: &vk::ShaderModuleCreateInfo,
+    ) -> vk::ShaderModule {
+        unsafe {
+            self.handle
+                .create_shader_module(create_info, None)
+                .expect("I pray that I never run out of memory and that the  shader code is valid")
+        }
+    }
+
+    pub fn destroy_shader_module(&self, module: vk::ShaderModule) {
+        unsafe {
+            self.handle.destroy_shader_module(module, None);
+        }
+    }
+
+    pub fn create_pipeline_layout(
+        &self,
+        create_info: &vk::PipelineLayoutCreateInfo,
+    ) -> vk::PipelineLayout {
+        unsafe {
+            self.handle
+                .create_pipeline_layout(create_info, None)
+                .expect("I pray that I never run out of memory")
+        }
+    }
+
+    pub fn destroy_pipeline_layout(&self, layout: vk::PipelineLayout) {
+        unsafe {
+            self.handle.destroy_pipeline_layout(layout, None);
+        }
+    }
+
+    pub fn create_compute_pipelines(
+        &self,
+        create_infos: &[vk::ComputePipelineCreateInfo],
+    ) -> Vec<vk::Pipeline> {
+        unsafe {
+            self.handle
+                .create_compute_pipelines(vk::PipelineCache::null(), create_infos, None)
+                .expect("I pray that I never run out of memory")
+        }
+    }
+
+    pub fn destroy_pipeline(&self, pipeline: vk::Pipeline) {
+        unsafe {
+            self.handle.destroy_pipeline(pipeline, None);
+        }
+    }
+
+    pub fn execute_compute_pipeline(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        pipeline: vk::Pipeline,
+        layout: vk::PipelineLayout,
+        descriptor_sets: &[vk::DescriptorSet],
+        group_counts: [u32; 3],
+    ) {
+        unsafe {
+            self.handle
+                .cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::COMPUTE, pipeline);
+            self.handle.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::COMPUTE,
+                layout,
+                0,
+                descriptor_sets,
+                &[],
+            );
+            self.handle.cmd_dispatch(
+                command_buffer,
+                group_counts[0],
+                group_counts[1],
+                group_counts[2],
+            )
+        }
+    }
 }
 
 impl Drop for Device {

@@ -3,10 +3,16 @@ use crate::vulkan_rs::window;
 use crate::vulkan_rs::AllocatedImage;
 use crate::vulkan_rs::Allocator;
 use crate::vulkan_rs::AppInfo;
+use crate::vulkan_rs::DescriptorAllocator;
+use crate::vulkan_rs::DescriptorLayoutBuilder;
+use crate::vulkan_rs::DescriptorSetLayout;
 use crate::vulkan_rs::Device;
 use crate::vulkan_rs::EngineInfo;
 use crate::vulkan_rs::Instance;
 use crate::vulkan_rs::PhysicalDeviceSelector;
+use crate::vulkan_rs::Pipeline;
+use crate::vulkan_rs::PoolSizeRatio;
+use crate::vulkan_rs::ShaderModule;
 use crate::vulkan_rs::Surface;
 use crate::vulkan_rs::Swapchain;
 use crate::vulkan_rs::Version;
@@ -72,6 +78,10 @@ pub struct VulkanRenderer {
     frame_data: Vec<FrameData>,
     frame_index: usize,
     draw_image: AllocatedImage,
+    descriptor_allocator: DescriptorAllocator,
+    draw_image_descriptor: vk::DescriptorSet,
+    draw_image_descriptor_layout: DescriptorSetLayout,
+    gradient_pipeline: Pipeline,
 }
 
 impl VulkanRenderer {
@@ -167,6 +177,15 @@ impl VulkanRenderer {
             draw_extent,
             vk::ImageAspectFlags::COLOR,
         );
+        let (draw_image_descriptor, draw_image_descriptor_layout, descriptor_allocator) =
+            VulkanRenderer::init_descriptors(device.clone(), &draw_image);
+
+        let gradient_shader = ShaderModule::new(device.clone(), "shaders/gradient.spv");
+        let gradient_pipeline = Pipeline::create_compute_pipeline(
+            device.clone(),
+            &[draw_image_descriptor_layout.layout()],
+            gradient_shader,
+        );
 
         VulkanRenderer {
             surface,
@@ -179,7 +198,61 @@ impl VulkanRenderer {
             frame_data,
             frame_index: 0,
             draw_image,
+            descriptor_allocator,
+            draw_image_descriptor_layout,
+            draw_image_descriptor,
+            gradient_pipeline,
         }
+    }
+
+    fn init_descriptors(
+        device: Arc<Device>,
+        draw_image: &AllocatedImage,
+    ) -> (vk::DescriptorSet, DescriptorSetLayout, DescriptorAllocator) {
+        let ratio_sizes = vec![PoolSizeRatio {
+            descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
+            ratio: 1.0,
+        }];
+
+        let mut descriptor_allocator = DescriptorAllocator::new(device.clone());
+        descriptor_allocator.init_pool(10, &ratio_sizes);
+
+        let mut builder = DescriptorLayoutBuilder::new();
+        builder.add_binding(
+            0,
+            vk::DescriptorType::STORAGE_IMAGE,
+            vk::ShaderStageFlags::COMPUTE,
+        );
+        let draw_image_descriptor_layout =
+            builder.build(device.clone(), vk::DescriptorSetLayoutCreateFlags::empty());
+
+        let draw_image_descriptor =
+            descriptor_allocator.allocate(draw_image_descriptor_layout.layout());
+
+        let image_info = vk::DescriptorImageInfo {
+            image_view: draw_image.image_view(),
+            image_layout: vk::ImageLayout::GENERAL,
+            sampler: vk::Sampler::null(),
+        };
+
+        let draw_image_write: vk::WriteDescriptorSet = vk::WriteDescriptorSet {
+            s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
+            p_next: std::ptr::null(),
+            dst_binding: 0,
+            dst_set: draw_image_descriptor,
+            descriptor_count: 1,
+            descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
+            p_image_info: &image_info,
+            ..Default::default()
+        };
+
+        device.update_descriptor_sets(&[draw_image_write]);
+
+        (
+            draw_image_descriptor,
+            draw_image_descriptor_layout,
+            descriptor_allocator,
+        )
     }
 
     fn get_current_frame(&self) -> &FrameData {
@@ -220,7 +293,7 @@ impl VulkanRenderer {
             vk::ImageLayout::GENERAL,
         );
 
-        self.draw_background(command_buffer, draw_image);
+        self.draw_background(command_buffer, draw_extent);
 
         self.device.transition_image_layout(
             command_buffer,
@@ -261,7 +334,15 @@ impl VulkanRenderer {
         self.frame_index += 1;
     }
 
-    pub fn draw_background(&self, command_buffer: vk::CommandBuffer, image: vk::Image) {
+    pub fn draw_background(&self, command_buffer: vk::CommandBuffer, draw_extent: vk::Extent2D) {
+        self.gradient_pipeline.execute_compute(
+            command_buffer,
+            &[self.draw_image_descriptor],
+            draw_extent,
+        )
+    }
+
+    pub fn cmd_clear_image(&self, command_buffer: vk::CommandBuffer, image: vk::Image) {
         let flash_color = (self.frame_index as f32 / 100.0).sin().abs();
         let clear_value = vk::ClearColorValue {
             float32: [0.0, 0.0, flash_color, 1.0],

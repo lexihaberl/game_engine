@@ -1,17 +1,26 @@
-pub mod allocation;
+mod allocation;
 pub mod debug;
-pub mod device;
+mod descriptor;
+mod device;
 mod instance;
+mod pipelines;
+mod shader;
 mod utils;
 pub mod window;
 
 pub use allocation::AllocatedImage;
 pub use allocation::Allocator;
+pub use descriptor::DescriptorAllocator;
+pub use descriptor::DescriptorLayoutBuilder;
+pub use descriptor::DescriptorSetLayout;
+pub use descriptor::PoolSizeRatio;
 pub use device::Device;
 pub use device::PhysicalDeviceSelector;
 pub use instance::AppInfo;
 pub use instance::EngineInfo;
 pub use instance::Instance;
 pub use instance::Version;
+pub use pipelines::Pipeline;
+pub use shader::ShaderModule;
 pub use window::Surface;
 pub use window::Swapchain;

@@ -92,6 +92,10 @@ impl AllocatedImage {
     pub fn extent(&self) -> vk::Extent3D {
         self.extent
     }
+
+    pub fn image_view(&self) -> vk::ImageView {
+        self.image_view
+    }
 }
 
 impl Drop for AllocatedImage {
