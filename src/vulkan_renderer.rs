@@ -51,12 +51,67 @@ impl FrameData {
 
 impl Drop for FrameData {
     fn drop(&mut self) {
+        log::debug!("Dropping FrameData");
         self.device.destroy_command_pool(self.command_pool);
         self.device
             .destroy_semaphore(self.image_available_semaphore);
         self.device
             .destroy_semaphore(self.result_presentable_semaphore);
         self.device.destroy_fence(self.in_flight_fence);
+    }
+}
+
+pub struct ImmediateCommandData {
+    device: Arc<Device>,
+    command_pool: vk::CommandPool,
+    command_buffer: vk::CommandBuffer,
+    fence: vk::Fence,
+}
+
+impl ImmediateCommandData {
+    fn new(device: Arc<Device>) -> Self {
+        let command_pool = device.create_command_pool();
+        let command_buffer = device.create_command_buffer(command_pool);
+        let fence = device.create_fence(vk::FenceCreateFlags::SIGNALED);
+        Self {
+            device,
+            command_pool,
+            command_buffer,
+            fence,
+        }
+    }
+
+    fn immediate_submit(&self, commands: fn(&Device, &vk::CommandBuffer)) {
+        self.device.reset_fence(&self.fence);
+        self.device.reset_command_buffer(self.command_buffer);
+        self.device.begin_command_buffer(
+            self.command_buffer,
+            vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
+        );
+        commands(&self.device, &self.command_buffer);
+        let submit_info = vk::SubmitInfo2 {
+            s_type: vk::StructureType::SUBMIT_INFO_2,
+            p_next: std::ptr::null(),
+            command_buffer_info_count: 1,
+            p_command_buffer_infos: &vk::CommandBufferSubmitInfo {
+                s_type: vk::StructureType::COMMAND_BUFFER_SUBMIT_INFO,
+                p_next: std::ptr::null(),
+                command_buffer: self.command_buffer,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        self.device
+            .submit_to_graphics_queue(submit_info, self.fence);
+        self.device.wait_for_fence(&self.fence, u64::MAX);
+    }
+}
+
+impl Drop for ImmediateCommandData {
+    fn drop(&mut self) {
+        log::debug!("Dropping ImmediateCommandData");
+        self.device.destroy_command_pool(self.command_pool);
+        self.device.destroy_fence(self.fence);
     }
 }
 
@@ -82,6 +137,7 @@ pub struct VulkanRenderer {
     draw_image_descriptor: vk::DescriptorSet,
     draw_image_descriptor_layout: DescriptorSetLayout,
     gradient_pipeline: Pipeline,
+    immediate_command_data: ImmediateCommandData,
 }
 
 impl VulkanRenderer {
@@ -187,6 +243,8 @@ impl VulkanRenderer {
             gradient_shader,
         );
 
+        let immediate_command_data = ImmediateCommandData::new(device.clone());
+
         VulkanRenderer {
             surface,
             allocator,
@@ -202,6 +260,7 @@ impl VulkanRenderer {
             draw_image_descriptor_layout,
             draw_image_descriptor,
             gradient_pipeline,
+            immediate_command_data,
         }
     }
 
@@ -406,6 +465,8 @@ impl VulkanRenderer {
 
 impl Drop for VulkanRenderer {
     fn drop(&mut self) {
+        log::debug!("Dropping VulkanRenderer. Waiting for device idle");
         self.device.wait_idle();
+        log::debug!("Device is idle. Dropping resources");
     }
 }
