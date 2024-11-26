@@ -1,4 +1,5 @@
 use game_engine::VulkanRenderer;
+use raw_window_handle::HasDisplayHandle;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::ElementState;
@@ -29,15 +30,20 @@ struct GameEngine {
     window_settings: WindowSettings,
     last_frame: std::time::Instant,
     renderer: Option<VulkanRenderer>,
+    egui_context: egui::Context,
+    egui_state: Option<egui_winit::State>,
 }
 
 impl GameEngine {
     fn new(window_settings: WindowSettings) -> GameEngine {
+        let egui_context = egui::Context::default();
         GameEngine {
             window: None,
             window_settings,
             last_frame: std::time::Instant::now(),
             renderer: None,
+            egui_context,
+            egui_state: None,
         }
     }
 
@@ -58,17 +64,62 @@ impl GameEngine {
     }
 }
 
+fn handle_egui(window: &Window, ctx: &egui::Context, egui_state: &mut egui_winit::State) {
+    let raw_input = egui_state.take_egui_input(window);
+    let full_output = ctx.run(raw_input, |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.label("Hello world!");
+            if ui.button("Click me").clicked() {
+                // take some action here
+            }
+        });
+    });
+
+    egui_state.handle_platform_output(window, full_output.platform_output);
+    let clipped_primitives = ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
+    println!("clipped_primitives: {:?}", clipped_primitives);
+    println!("textures_delta: {:?}", full_output.textures_delta);
+    panic!("AHHH");
+    //paint(full_output.textures_delta, clipped_primitives);
+}
+
 impl ApplicationHandler for GameEngine {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         log::info!("Setting up window and renderer");
         let window = self.init_window(event_loop);
 
         self.renderer = Some(VulkanRenderer::new(window.clone()));
+        let egui_state = egui_winit::State::new(
+            self.egui_context.clone(),
+            self.egui_context.viewport_id(),
+            &window
+                .display_handle()
+                .expect("Handle should be supported and available"),
+            // I hope  this is what they expect me to pass here
+            Some(window.scale_factor() as f32),
+            window.theme(),
+            //4096 x 4096 is hopefully big enough for texture atlas, while still supported by most
+            //     hardware
+            Some(4096),
+        );
+        self.egui_state = Some(egui_state);
         self.window = Some(window);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        if let (Some(renderer), Some(window)) = (self.renderer.as_mut(), self.window.as_ref()) {
+        if let (Some(renderer), Some(window), Some(egui_state)) = (
+            self.renderer.as_mut(),
+            self.window.as_ref(),
+            self.egui_state.as_mut(),
+        ) {
+            let event_response = egui_state.on_window_event(window, &event);
+            if event_response.repaint {
+                log::debug!("Egui wants to be repainted after event \"{:?}\" ", event);
+            }
+            if event_response.consumed {
+                log::debug!("Event \"{:?}\" was consumed by egui", event);
+                return;
+            }
             let mut exit = false;
             match event {
                 WindowEvent::CloseRequested => {
@@ -76,6 +127,7 @@ impl ApplicationHandler for GameEngine {
                     exit = true;
                 }
                 WindowEvent::RedrawRequested => {
+                    handle_egui(window, &self.egui_context, egui_state);
                     self.last_frame = std::time::Instant::now();
                     window.pre_present_notify();
                     renderer.draw();
