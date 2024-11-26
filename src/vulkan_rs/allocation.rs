@@ -100,6 +100,7 @@ impl AllocatedImage {
 
 impl Drop for AllocatedImage {
     fn drop(&mut self) {
+        log::debug!("Dropping allocated image");
         self.device.destroy_image_view(self.image_view);
         self.allocator
             .lock()

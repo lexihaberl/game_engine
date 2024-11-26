@@ -37,6 +37,7 @@ impl ShaderModule {
 
 impl Drop for ShaderModule {
     fn drop(&mut self) {
+        log::debug!("Dropping ShaderModule");
         self.device.destroy_shader_module(self.module);
     }
 }

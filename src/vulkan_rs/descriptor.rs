@@ -22,6 +22,7 @@ impl DescriptorSetLayout {
 
 impl Drop for DescriptorSetLayout {
     fn drop(&mut self) {
+        log::debug!("Destroying descriptor set layout");
         self.device.destroy_descriptor_set_layout(self.layout);
     }
 }
@@ -142,6 +143,7 @@ impl DescriptorAllocator {
 
 impl Drop for DescriptorAllocator {
     fn drop(&mut self) {
+        log::debug!("Destroying DescriptorAllocator");
         self.destroy_pool();
     }
 }

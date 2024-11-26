@@ -73,6 +73,7 @@ impl Pipeline {
 
 impl Drop for Pipeline {
     fn drop(&mut self) {
+        log::debug!("Dropping pipeline");
         self.device.destroy_pipeline(self.pipeline);
         self.device.destroy_pipeline_layout(self.pipeline_layout);
     }
