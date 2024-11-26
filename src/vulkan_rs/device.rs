@@ -783,6 +783,17 @@ impl Device {
         }
     }
 
+    pub fn create_graphics_pipeline(
+        &self,
+        create_infos: &[vk::GraphicsPipelineCreateInfo],
+    ) -> Vec<vk::Pipeline> {
+        unsafe {
+            self.handle
+                .create_graphics_pipelines(vk::PipelineCache::null(), create_infos, None)
+                .expect("I pray that I never run out of memory")
+        }
+    }
+
     pub fn destroy_pipeline(&self, pipeline: vk::Pipeline) {
         unsafe {
             self.handle.destroy_pipeline(pipeline, None);
@@ -814,6 +825,30 @@ impl Device {
                 group_counts[1],
                 group_counts[2],
             )
+        }
+    }
+
+    pub fn draw_geometry(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        rendering_info: &vk::RenderingInfo,
+        pipeline: vk::Pipeline,
+        view_port: vk::Viewport,
+        scissor: vk::Rect2D,
+    ) {
+        unsafe {
+            self.handle
+                .cmd_begin_rendering(command_buffer, rendering_info);
+            self.handle.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                pipeline,
+            );
+            self.handle
+                .cmd_set_viewport(command_buffer, 0, &[view_port]);
+            self.handle.cmd_set_scissor(command_buffer, 0, &[scissor]);
+            self.handle.cmd_draw(command_buffer, 3, 1, 0, 0);
+            self.handle.cmd_end_rendering(command_buffer);
         }
     }
 }

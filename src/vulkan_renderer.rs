@@ -3,14 +3,16 @@ use crate::vulkan_rs::window;
 use crate::vulkan_rs::AllocatedImage;
 use crate::vulkan_rs::Allocator;
 use crate::vulkan_rs::AppInfo;
+use crate::vulkan_rs::ComputePipeline;
 use crate::vulkan_rs::DescriptorAllocator;
 use crate::vulkan_rs::DescriptorLayoutBuilder;
 use crate::vulkan_rs::DescriptorSetLayout;
 use crate::vulkan_rs::Device;
 use crate::vulkan_rs::EngineInfo;
+use crate::vulkan_rs::GraphicsPipeline;
+use crate::vulkan_rs::GraphicsPipelineBuilder;
 use crate::vulkan_rs::Instance;
 use crate::vulkan_rs::PhysicalDeviceSelector;
-use crate::vulkan_rs::Pipeline;
 use crate::vulkan_rs::PoolSizeRatio;
 use crate::vulkan_rs::ShaderModule;
 use crate::vulkan_rs::Surface;
@@ -136,8 +138,9 @@ pub struct VulkanRenderer {
     descriptor_allocator: DescriptorAllocator,
     draw_image_descriptor: vk::DescriptorSet,
     draw_image_descriptor_layout: DescriptorSetLayout,
-    gradient_pipeline: Pipeline,
+    gradient_pipeline: ComputePipeline,
     immediate_command_data: ImmediateCommandData,
+    triangle_pipeline: GraphicsPipeline,
 }
 
 impl VulkanRenderer {
@@ -236,12 +239,39 @@ impl VulkanRenderer {
         let (draw_image_descriptor, draw_image_descriptor_layout, descriptor_allocator) =
             VulkanRenderer::init_descriptors(device.clone(), &draw_image);
 
-        let gradient_shader = ShaderModule::new(device.clone(), "shaders/gradient.spv");
-        let gradient_pipeline = Pipeline::create_compute_pipeline(
+        let gradient_shader = ShaderModule::new(device.clone(), "shaders/gradient_comp.spv");
+        let gradient_pipeline = ComputePipeline::new(
             device.clone(),
             &[draw_image_descriptor_layout.layout()],
             gradient_shader,
         );
+
+        let triangle_vert_shader = ShaderModule::new(device.clone(), "shaders/triangle_vert.spv");
+        let triangle_frag_shader = ShaderModule::new(device.clone(), "shaders/triangle_frag.spv");
+        let triangle_pipeline_layout_info = vk::PipelineLayoutCreateInfo {
+            s_type: vk::StructureType::PIPELINE_LAYOUT_CREATE_INFO,
+            p_next: std::ptr::null(),
+            flags: vk::PipelineLayoutCreateFlags::empty(),
+            set_layout_count: 0,
+            p_set_layouts: std::ptr::null(),
+            push_constant_range_count: 0,
+            p_push_constant_ranges: std::ptr::null(),
+            ..Default::default()
+        };
+        let triangle_pipeline_layout =
+            device.create_pipeline_layout(&triangle_pipeline_layout_info);
+        let triangle_pipeline = GraphicsPipelineBuilder::new()
+            .set_layout(triangle_pipeline_layout)
+            .set_shaders(&triangle_frag_shader, &triangle_vert_shader)
+            .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .set_polygon_mode(vk::PolygonMode::FILL)
+            .set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE)
+            .disable_multisampling()
+            .disable_blending()
+            .disable_depth_test()
+            .set_color_attachment_format(draw_image.format())
+            .set_depth_format(vk::Format::UNDEFINED)
+            .build_pipeline(device.clone());
 
         let immediate_command_data = ImmediateCommandData::new(device.clone());
 
@@ -261,6 +291,7 @@ impl VulkanRenderer {
             draw_image_descriptor,
             gradient_pipeline,
             immediate_command_data,
+            triangle_pipeline,
         }
     }
 
@@ -341,6 +372,7 @@ impl VulkanRenderer {
             width: draw_extent.width,
             height: draw_extent.height,
         };
+        let draw_image_view = self.draw_image.image_view();
 
         // start recording commands
         self.device
@@ -358,6 +390,21 @@ impl VulkanRenderer {
             command_buffer,
             draw_image,
             vk::ImageLayout::GENERAL,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        );
+
+        self.triangle_pipeline.draw(
+            command_buffer,
+            draw_image_view,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            draw_extent,
+            None,
+        );
+
+        self.device.transition_image_layout(
+            command_buffer,
+            draw_image,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
         );
 
