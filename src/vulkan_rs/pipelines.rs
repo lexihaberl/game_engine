@@ -1,7 +1,23 @@
 use super::device::Device;
 use super::shader::ShaderModule;
 use ash::vk;
+use nalgebra_glm::Vec4;
 use std::sync::Arc;
+
+#[repr(C)]
+#[derive(bytemuck::NoUninit, Copy, Clone, Debug)]
+pub struct PushConstants {
+    data1: Vec4,
+    data2: Vec4,
+    data3: Vec4,
+    data4: Vec4,
+}
+
+impl PushConstants {
+    pub fn as_bytes(&self) -> &[u8] {
+        bytemuck::bytes_of(self)
+    }
+}
 
 pub struct ComputePipeline {
     device: Arc<Device>,
@@ -15,11 +31,18 @@ impl ComputePipeline {
         set_layouts: &[vk::DescriptorSetLayout],
         shader: ShaderModule,
     ) -> Self {
+        let push_constants = vk::PushConstantRange {
+            stage_flags: vk::ShaderStageFlags::COMPUTE,
+            offset: 0,
+            size: std::mem::size_of::<PushConstants>() as u32,
+        };
         let layout_create_info = vk::PipelineLayoutCreateInfo {
             s_type: vk::StructureType::PIPELINE_LAYOUT_CREATE_INFO,
             p_next: std::ptr::null(),
             set_layout_count: set_layouts.len() as u32,
             p_set_layouts: set_layouts.as_ptr(),
+            push_constant_range_count: 1,
+            p_push_constant_ranges: &push_constants,
             ..Default::default()
         };
         let pipeline_layout = device.create_pipeline_layout(&layout_create_info);
@@ -53,6 +76,12 @@ impl ComputePipeline {
             (extent.height as f32 / 16.0).ceil() as u32,
             1,
         ];
+        let push_constants = PushConstants {
+            data1: Vec4::new(1.0, 0.0, 0.0, 1.0),
+            data2: Vec4::new(0.0, 0.0, 1.0, 1.0),
+            data3: Vec4::new(0.0, 0.0, 0.0, 0.0),
+            data4: Vec4::new(0.0, 0.0, 0.0, 0.0),
+        };
 
         self.device.execute_compute_pipeline(
             command_buffer,
@@ -60,6 +89,7 @@ impl ComputePipeline {
             self.pipeline_layout,
             descriptor_sets,
             group_counts,
+            &push_constants,
         )
     }
 }

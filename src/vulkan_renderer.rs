@@ -239,7 +239,7 @@ impl VulkanRenderer {
         let (draw_image_descriptor, draw_image_descriptor_layout, descriptor_allocator) =
             VulkanRenderer::init_descriptors(device.clone(), &draw_image);
 
-        let gradient_shader = ShaderModule::new(device.clone(), "shaders/gradient_comp.spv");
+        let gradient_shader = ShaderModule::new(device.clone(), "shaders/gradient_color_comp.spv");
         let gradient_pipeline = ComputePipeline::new(
             device.clone(),
             &[draw_image_descriptor_layout.layout()],

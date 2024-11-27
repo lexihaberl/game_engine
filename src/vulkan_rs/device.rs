@@ -1,5 +1,6 @@
 use super::instance::Instance;
 use super::instance::Version;
+use super::pipelines::PushConstants;
 use super::window::Surface;
 use ash::vk;
 use gpu_allocator::vulkan::Allocator;
@@ -807,6 +808,7 @@ impl Device {
         layout: vk::PipelineLayout,
         descriptor_sets: &[vk::DescriptorSet],
         group_counts: [u32; 3],
+        push_constants: &PushConstants,
     ) {
         unsafe {
             self.handle
@@ -818,6 +820,13 @@ impl Device {
                 0,
                 descriptor_sets,
                 &[],
+            );
+            self.handle.cmd_push_constants(
+                command_buffer,
+                layout,
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                push_constants.as_bytes(),
             );
             self.handle.cmd_dispatch(
                 command_buffer,
