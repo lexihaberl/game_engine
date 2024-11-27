@@ -7,9 +7,11 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 pub struct Allocator {
+    // NOTE: allocator has to be dropped before device to ensure that the device
+    // is still alive when the allocator is dropped.
+    allocator: gpu_allocator::vulkan::Allocator,
     #[allow(dead_code)]
     device: Arc<Device>,
-    allocator: gpu_allocator::vulkan::Allocator,
 }
 
 impl Allocator {
@@ -68,6 +70,12 @@ impl Allocator {
         self.allocator
             .free(allocation)
             .expect("I pray that this never fails");
+    }
+}
+
+impl Drop for Allocator {
+    fn drop(&mut self) {
+        log::debug!("Dropping allocator");
     }
 }
 
@@ -193,9 +201,6 @@ impl AllocatedBuffer {
 impl Drop for AllocatedBuffer {
     fn drop(&mut self) {
         log::debug!("Dropping allocated buffer");
-        log::error!("handle: {:?}", unsafe {
-            self.allocation.as_ref().unwrap().memory()
-        });
         self.allocator
             .lock()
             .expect("Mutex has been poisoned and i dont wanan handle it yet")
