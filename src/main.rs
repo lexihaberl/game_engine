@@ -26,12 +26,14 @@ impl WindowSettings {
 }
 
 struct GameEngine {
-    window: Option<Arc<Window>>,
     window_settings: WindowSettings,
     last_frame: std::time::Instant,
     renderer: Option<VulkanRenderer>,
     egui_context: egui::Context,
     egui_state: Option<egui_winit::State>,
+    // window should be the last field to be dropped since egui (and maybe other stuff + future
+    // stuff) has an implicit dependancy to it
+    window: Option<Arc<Window>>,
 }
 
 impl GameEngine {
@@ -77,9 +79,9 @@ fn handle_egui(window: &Window, ctx: &egui::Context, egui_state: &mut egui_winit
 
     egui_state.handle_platform_output(window, full_output.platform_output);
     let clipped_primitives = ctx.tessellate(full_output.shapes, full_output.pixels_per_point);
-    println!("clipped_primitives: {:?}", clipped_primitives);
-    println!("textures_delta: {:?}", full_output.textures_delta);
-    panic!("AHHH");
+    // println!("clipped_primitives: {:?}", clipped_primitives);
+    // println!("textures_delta: {:?}", full_output.textures_delta);
+    // panic!("AHHH");
     //paint(full_output.textures_delta, clipped_primitives);
 }
 
