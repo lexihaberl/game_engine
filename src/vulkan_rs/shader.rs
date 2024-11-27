@@ -30,13 +30,24 @@ impl ShaderModule {
         Self { device, module }
     }
 
-    pub fn module(&self) -> vk::ShaderModule {
-        self.module
+    pub fn create_shader_stage_info(
+        &self,
+        stage: vk::ShaderStageFlags,
+    ) -> vk::PipelineShaderStageCreateInfo {
+        vk::PipelineShaderStageCreateInfo {
+            s_type: vk::StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
+            p_next: std::ptr::null(),
+            stage,
+            module: self.module,
+            p_name: b"main\0".as_ptr() as *const i8,
+            ..Default::default()
+        }
     }
 }
 
 impl Drop for ShaderModule {
     fn drop(&mut self) {
+        log::debug!("Dropping ShaderModule");
         self.device.destroy_shader_module(self.module);
     }
 }

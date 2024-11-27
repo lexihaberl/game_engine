@@ -309,6 +309,7 @@ impl Swapchain {
 
 impl Drop for Swapchain {
     fn drop(&mut self) {
+        log::debug!("Dropping swapchain");
         unsafe {
             for image_view in self.image_views.iter() {
                 self.device.destroy_image_view(*image_view);

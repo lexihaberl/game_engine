@@ -21,12 +21,16 @@ fn main() {
                     .expect("Extension should exist and be valid utf-8 since we set the name")
                 {
                     "vert" | "frag" | "comp" => {
-                        let output_path = Path::new(&output_dir)
-                            .join(
-                                path.file_stem()
-                                    .expect("File should have a valid utf-8 stem since we name it"),
-                            )
-                            .with_extension("spv");
+                        let file_stem = path
+                            .file_stem()
+                            .expect("File should have a valid utf-8 stem since we name it")
+                            .to_str()
+                            .expect("File stem should be valid utf-8 since we set the name");
+                        let ext_text = extension
+                            .to_str()
+                            .expect("Extension should be valid utf-8 since we set the name");
+                        let output_file_name = format!("{}_{}.spv", file_stem, ext_text);
+                        let output_path = Path::new(&output_dir).join(output_file_name);
 
                         println!("Compiling {:?}", path);
 

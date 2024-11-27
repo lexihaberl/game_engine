@@ -5,6 +5,7 @@ use ash::khr::{android_surface, wayland_surface, win32_surface, xcb_surface, xli
 use ash::vk;
 use ash::vk::SurfaceKHR;
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
+use gpu_allocator::AllocatorDebugSettings;
 use raw_window_handle::RawDisplayHandle;
 use raw_window_handle::RawWindowHandle;
 use std::ffi::c_char;
@@ -374,7 +375,14 @@ impl Instance {
             instance: self.handle.clone(),
             device,
             physical_device,
-            debug_settings: Default::default(),
+            debug_settings: AllocatorDebugSettings {
+                log_frees: true,
+                log_allocations: true,
+                log_stack_traces: false,
+                log_leaks_on_shutdown: true,
+                log_memory_information: true,
+                store_stack_traces: false,
+            },
             buffer_device_address: true,
             allocation_sizes: Default::default(),
         })

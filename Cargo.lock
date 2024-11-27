@@ -208,9 +208,9 @@ checksum = "79296716171880943b8470b5f8d03aa55eb2e645a4874bdbb28adb49162e012c"
 
 [[package]]
 name = "bytemuck"
-version = "1.19.0"
+version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8334215b81e418a0a7bdb8ef0849474f40bb10c8b71f1c4ed315cff49f32494d"
+checksum = "8b37c88a63ffd85d15b406896cc343916d7cf57838a847b3a6f2ca5d39a5695a"
 dependencies = [
  "bytemuck_derive",
 ]
@@ -579,12 +579,14 @@ name = "game_engine"
 version = "0.1.0"
 dependencies = [
  "ash",
+ "bytemuck",
  "egui",
  "egui-winit",
  "env_logger",
  "gpu-allocator",
  "log",
  "nalgebra-glm",
+ "presser",
  "raw-window-handle",
  "winit",
 ]
@@ -932,6 +934,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3bf139e93ad757869338ad85239cb1d6c067b23b94e5846e637ca6328ee4be60"
 dependencies = [
  "approx",
+ "bytemuck",
  "matrixmultiply",
  "num-complex",
  "num-rational",

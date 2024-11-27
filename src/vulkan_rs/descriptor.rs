@@ -22,6 +22,7 @@ impl DescriptorSetLayout {
 
 impl Drop for DescriptorSetLayout {
     fn drop(&mut self) {
+        log::debug!("Destroying descriptor set layout");
         self.device.destroy_descriptor_set_layout(self.layout);
     }
 }
@@ -49,6 +50,7 @@ impl<'a> DescriptorLayoutBuilder<'a> {
         self.bindings.push(binding);
     }
 
+    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.bindings.clear();
     }
@@ -104,6 +106,7 @@ impl DescriptorAllocator {
         self.pool = Some(self.device.create_descriptor_pool(&pool_info));
     }
 
+    #[allow(dead_code)]
     pub fn clear_descriptors(&self) {
         if let Some(pool) = self.pool {
             self.device.reset_descriptor_pool(pool);
@@ -142,6 +145,7 @@ impl DescriptorAllocator {
 
 impl Drop for DescriptorAllocator {
     fn drop(&mut self) {
+        log::debug!("Destroying DescriptorAllocator");
         self.destroy_pool();
     }
 }
