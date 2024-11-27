@@ -13,3 +13,4 @@ gpu-allocator = "0.27.0"
 # to safely convert nalbegra types (+structs holding those) to &[u8]
 nalgebra-glm = { version = "0.19.0", features = ["convert-bytemuck"] }
 bytemuck = { version = "1.20.0", features = ["derive"] }
+presser = "0.3.1"

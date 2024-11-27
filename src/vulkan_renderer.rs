@@ -9,8 +9,11 @@ use crate::vulkan_rs::DescriptorLayoutBuilder;
 use crate::vulkan_rs::DescriptorSetLayout;
 use crate::vulkan_rs::Device;
 use crate::vulkan_rs::EngineInfo;
+use crate::vulkan_rs::GPUDrawPushConstants;
+use crate::vulkan_rs::GPUMeshBuffers;
 use crate::vulkan_rs::GraphicsPipeline;
 use crate::vulkan_rs::GraphicsPipelineBuilder;
+use crate::vulkan_rs::ImmediateCommandData;
 use crate::vulkan_rs::Instance;
 use crate::vulkan_rs::PhysicalDeviceSelector;
 use crate::vulkan_rs::PoolSizeRatio;
@@ -18,7 +21,9 @@ use crate::vulkan_rs::ShaderModule;
 use crate::vulkan_rs::Surface;
 use crate::vulkan_rs::Swapchain;
 use crate::vulkan_rs::Version;
+use crate::vulkan_rs::Vertex;
 use ash::vk;
+use nalgebra_glm as glm;
 use raw_window_handle::HasDisplayHandle;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -63,60 +68,6 @@ impl Drop for FrameData {
     }
 }
 
-pub struct ImmediateCommandData {
-    device: Arc<Device>,
-    command_pool: vk::CommandPool,
-    command_buffer: vk::CommandBuffer,
-    fence: vk::Fence,
-}
-
-impl ImmediateCommandData {
-    fn new(device: Arc<Device>) -> Self {
-        let command_pool = device.create_command_pool();
-        let command_buffer = device.create_command_buffer(command_pool);
-        let fence = device.create_fence(vk::FenceCreateFlags::SIGNALED);
-        Self {
-            device,
-            command_pool,
-            command_buffer,
-            fence,
-        }
-    }
-
-    fn immediate_submit(&self, commands: fn(&Device, &vk::CommandBuffer)) {
-        self.device.reset_fence(&self.fence);
-        self.device.reset_command_buffer(self.command_buffer);
-        self.device.begin_command_buffer(
-            self.command_buffer,
-            vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
-        );
-        commands(&self.device, &self.command_buffer);
-        let submit_info = vk::SubmitInfo2 {
-            s_type: vk::StructureType::SUBMIT_INFO_2,
-            p_next: std::ptr::null(),
-            command_buffer_info_count: 1,
-            p_command_buffer_infos: &vk::CommandBufferSubmitInfo {
-                s_type: vk::StructureType::COMMAND_BUFFER_SUBMIT_INFO,
-                p_next: std::ptr::null(),
-                command_buffer: self.command_buffer,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        self.device
-            .submit_to_graphics_queue(submit_info, self.fence);
-        self.device.wait_for_fence(&self.fence, u64::MAX);
-    }
-}
-
-impl Drop for ImmediateCommandData {
-    fn drop(&mut self) {
-        log::debug!("Dropping ImmediateCommandData");
-        self.device.destroy_command_pool(self.command_pool);
-        self.device.destroy_fence(self.fence);
-    }
-}
-
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 pub struct VulkanRenderer {
@@ -141,6 +92,8 @@ pub struct VulkanRenderer {
     gradient_pipeline: ComputePipeline,
     immediate_command_data: ImmediateCommandData,
     triangle_pipeline: GraphicsPipeline,
+    mesh_pipeline: GraphicsPipeline,
+    mesh: GPUMeshBuffers,
 }
 
 impl VulkanRenderer {
@@ -273,7 +226,78 @@ impl VulkanRenderer {
             .set_depth_format(vk::Format::UNDEFINED)
             .build_pipeline(device.clone());
 
+        let mesh_frag_shader = ShaderModule::new(device.clone(), "shaders/triangle_frag.spv");
+        let mesh_vert_shader = ShaderModule::new(device.clone(), "shaders/triangle_mesh_vert.spv");
+        let push_constants = vk::PushConstantRange {
+            stage_flags: vk::ShaderStageFlags::VERTEX,
+            offset: 0,
+            size: std::mem::size_of::<GPUDrawPushConstants>() as u32,
+        };
+        let mesh_pipeline_layout_info = vk::PipelineLayoutCreateInfo {
+            s_type: vk::StructureType::PIPELINE_LAYOUT_CREATE_INFO,
+            p_next: std::ptr::null(),
+            flags: vk::PipelineLayoutCreateFlags::empty(),
+            set_layout_count: 0,
+            p_set_layouts: std::ptr::null(),
+            push_constant_range_count: 1,
+            p_push_constant_ranges: &push_constants,
+            ..Default::default()
+        };
+        let mesh_pipeline_layout = device.create_pipeline_layout(&mesh_pipeline_layout_info);
+        let mesh_pipeline = GraphicsPipelineBuilder::new()
+            .set_layout(mesh_pipeline_layout)
+            .set_shaders(&mesh_frag_shader, &mesh_vert_shader)
+            .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .set_polygon_mode(vk::PolygonMode::FILL)
+            .set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE)
+            .disable_multisampling()
+            .disable_blending()
+            .disable_depth_test()
+            .set_color_attachment_format(draw_image.format())
+            .set_depth_format(vk::Format::UNDEFINED)
+            .build_pipeline(device.clone());
+
         let immediate_command_data = ImmediateCommandData::new(device.clone());
+
+        let vertices = [
+            Vertex::new(
+                glm::vec3(0.5, -0.5, 0.0),
+                0.0,
+                glm::vec3(0.0, 0.0, 0.0),
+                0.0,
+                glm::vec4(0.0, 0.0, 0.0, 1.0),
+            ),
+            Vertex::new(
+                glm::vec3(0.5, 0.5, 0.0),
+                0.0,
+                glm::vec3(0.0, 0.0, 0.0),
+                0.0,
+                glm::vec4(0.0, 0.0, 1.0, 1.0),
+            ),
+            Vertex::new(
+                glm::vec3(-0.5, -0.5, 0.0),
+                0.0,
+                glm::vec3(0.0, 0.0, 0.0),
+                0.0,
+                glm::vec4(1.0, 0.0, 0.0, 1.0),
+            ),
+            Vertex::new(
+                glm::vec3(-0.5, 0.5, 0.0),
+                0.0,
+                glm::vec3(0.0, 0.0, 0.0),
+                0.0,
+                glm::vec4(0.0, 1.0, 0.0, 1.0),
+            ),
+        ];
+        let indices = [0, 1, 2, 2, 1, 3];
+
+        let mesh = GPUMeshBuffers::upload_mesh(
+            device.clone(),
+            allocator.clone(),
+            &indices,
+            &vertices,
+            &immediate_command_data,
+        );
 
         VulkanRenderer {
             surface,
@@ -292,6 +316,8 @@ impl VulkanRenderer {
             gradient_pipeline,
             immediate_command_data,
             triangle_pipeline,
+            mesh_pipeline,
+            mesh,
         }
     }
 
@@ -399,6 +425,16 @@ impl VulkanRenderer {
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             draw_extent,
             None,
+            None,
+        );
+
+        self.mesh_pipeline.draw(
+            command_buffer,
+            draw_image_view,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            draw_extent,
+            None,
+            Some(&self.mesh),
         );
 
         self.device.transition_image_layout(

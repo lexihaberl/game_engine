@@ -29,7 +29,7 @@ impl Allocator {
             location: gpu_allocator::MemoryLocation::GpuOnly,
             requirements: image_memory_req,
             linear: false,
-            allocation_scheme: AllocationScheme::DedicatedImage(image),
+            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
         };
         let allocation = self
             .allocator
@@ -40,7 +40,31 @@ impl Allocator {
         allocation
     }
 
+    pub fn allocate_buffer(
+        &mut self,
+        buffer_name: &str,
+        buffer: vk::Buffer,
+        buffer_memory_req: vk::MemoryRequirements,
+        location: gpu_allocator::MemoryLocation,
+    ) -> Allocation {
+        let allocation_create_desc = AllocationCreateDesc {
+            name: buffer_name,
+            requirements: buffer_memory_req,
+            location,
+            linear: true,
+            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+        };
+        let allocation = self
+            .allocator
+            .allocate(&allocation_create_desc)
+            .expect("I pray that this never fails");
+        self.device
+            .bind_buffer_memory(buffer, unsafe { allocation.memory() }, allocation.offset());
+        allocation
+    }
+
     pub fn free_allocation(&mut self, allocation: Allocation) {
+        log::debug!("Freeing allocation");
         self.allocator
             .free(allocation)
             .expect("I pray that this never fails");
@@ -114,5 +138,72 @@ impl Drop for AllocatedImage {
                     .expect("Allocation should exist until its dropped"),
             );
         self.device.destroy_image(self.image);
+    }
+}
+
+pub struct AllocatedBuffer {
+    device: Arc<Device>,
+    allocator: Arc<Mutex<Allocator>>,
+    buffer: vk::Buffer,
+    allocation: Option<Allocation>,
+}
+
+impl AllocatedBuffer {
+    pub fn new(
+        device: Arc<Device>,
+        allocator: Arc<Mutex<Allocator>>,
+        buffer_name: &str,
+        usage: vk::BufferUsageFlags,
+        size: vk::DeviceSize,
+        location: gpu_allocator::MemoryLocation,
+    ) -> Self {
+        let buffer = device.create_buffer(usage, size);
+        let mem_requirements = device.get_buffer_memory_requirements(buffer);
+        let allocation = allocator
+            .lock()
+            .expect("Mutex has been poisoned and i dont wanan handle it yet")
+            .allocate_buffer(buffer_name, buffer, mem_requirements, location);
+        Self {
+            device,
+            allocator,
+            buffer,
+            allocation: Some(allocation),
+        }
+    }
+
+    pub fn get_device_address(&self) -> vk::DeviceAddress {
+        self.device.get_buffer_device_address(self.buffer)
+    }
+
+    pub fn copy_from_slice<T: Copy>(&mut self, data: &[T], offset: usize) {
+        if let Some(allocation) = &mut self.allocation {
+            //TODO: maybe add some alignment stuff? refer to gpu allocator crate
+            let copy_record = presser::copy_from_slice_to_offset(data, allocation, offset)
+                .expect("I pray that this never fails");
+            log::debug!("Copy record: {:?}", copy_record);
+            assert!(copy_record.copy_start_offset == offset);
+        }
+    }
+
+    pub fn buffer(&self) -> vk::Buffer {
+        self.buffer
+    }
+}
+
+impl Drop for AllocatedBuffer {
+    fn drop(&mut self) {
+        log::debug!("Dropping allocated buffer");
+        log::error!("handle: {:?}", unsafe {
+            self.allocation.as_ref().unwrap().memory()
+        });
+        self.allocator
+            .lock()
+            .expect("Mutex has been poisoned and i dont wanan handle it yet")
+            .free_allocation(
+                self.allocation
+                    .take()
+                    .expect("Allocation should exist until its dropped"),
+            );
+        self.device.destroy_buffer(self.buffer);
     }
 }

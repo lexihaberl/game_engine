@@ -2,8 +2,11 @@ use super::instance::Instance;
 use super::instance::Version;
 use super::pipelines::PushConstants;
 use super::window::Surface;
+use super::GPUDrawPushConstants;
+use super::GPUMeshBuffers;
 use ash::vk;
 use gpu_allocator::vulkan::Allocator;
+use nalgebra_glm as glm;
 use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::ffi::c_char;
@@ -425,6 +428,57 @@ impl Device {
         }
     }
 
+    pub fn create_buffer(&self, usage: vk::BufferUsageFlags, size: vk::DeviceSize) -> vk::Buffer {
+        let buffer_create_info = vk::BufferCreateInfo {
+            s_type: vk::StructureType::BUFFER_CREATE_INFO,
+            p_next: std::ptr::null(),
+            usage,
+            size,
+            ..Default::default()
+        };
+        unsafe {
+            self.handle
+                .create_buffer(&buffer_create_info, None)
+                .expect("I pray that I never run out of memory")
+        }
+    }
+
+    pub fn destroy_buffer(&self, buffer: vk::Buffer) {
+        unsafe {
+            self.handle.destroy_buffer(buffer, None);
+        }
+    }
+
+    pub fn get_buffer_memory_requirements(&self, buffer: vk::Buffer) -> vk::MemoryRequirements {
+        unsafe { self.handle.get_buffer_memory_requirements(buffer) }
+    }
+
+    pub fn bind_buffer_memory(
+        &self,
+        buffer: vk::Buffer,
+        memory: vk::DeviceMemory,
+        offset: vk::DeviceSize,
+    ) {
+        unsafe {
+            self.handle
+                .bind_buffer_memory(buffer, memory, offset)
+                .expect("I pray that host is never out of memory")
+        }
+    }
+
+    pub fn get_buffer_device_address(&self, buffer: vk::Buffer) -> vk::DeviceAddress {
+        let buffer_device_address_info = vk::BufferDeviceAddressInfo {
+            s_type: vk::StructureType::BUFFER_DEVICE_ADDRESS_INFO,
+            p_next: std::ptr::null(),
+            buffer,
+            ..Default::default()
+        };
+        unsafe {
+            self.handle
+                .get_buffer_device_address(&buffer_device_address_info)
+        }
+    }
+
     pub fn create_swapchain_loader(&self) -> ash::khr::swapchain::Device {
         self.instance.create_swapchain_loader(&self.handle)
     }
@@ -708,6 +762,7 @@ impl Device {
         }
     }
 
+    #[allow(dead_code)]
     pub fn reset_descriptor_pool(&self, pool: vk::DescriptorPool) {
         unsafe {
             self.handle
@@ -857,7 +912,67 @@ impl Device {
                 .cmd_set_viewport(command_buffer, 0, &[view_port]);
             self.handle.cmd_set_scissor(command_buffer, 0, &[scissor]);
             self.handle.cmd_draw(command_buffer, 3, 1, 0, 0);
+
             self.handle.cmd_end_rendering(command_buffer);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_mesh(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        rendering_info: &vk::RenderingInfo,
+        pipeline: vk::Pipeline,
+        layout: vk::PipelineLayout,
+        view_port: vk::Viewport,
+        scissor: vk::Rect2D,
+        buffer: &GPUMeshBuffers,
+    ) {
+        unsafe {
+            self.handle
+                .cmd_begin_rendering(command_buffer, rendering_info);
+            self.handle.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                pipeline,
+            );
+            self.handle
+                .cmd_set_viewport(command_buffer, 0, &[view_port]);
+            self.handle.cmd_set_scissor(command_buffer, 0, &[scissor]);
+
+            let push_constants = GPUDrawPushConstants {
+                world_matrix: glm::Mat4::identity(),
+                device_address: buffer.vertex_buffer_address(),
+            };
+
+            self.handle.cmd_push_constants(
+                command_buffer,
+                layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                push_constants.as_bytes(),
+            );
+            self.handle.cmd_bind_index_buffer(
+                command_buffer,
+                buffer.index_buffer(),
+                0,
+                vk::IndexType::UINT32,
+            );
+            self.handle.cmd_draw_indexed(command_buffer, 6, 1, 0, 0, 0);
+            self.handle.cmd_end_rendering(command_buffer);
+        }
+    }
+
+    pub fn cmd_copy_buffer(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        src_buffer: vk::Buffer,
+        dst_buffer: vk::Buffer,
+        regions: &[vk::BufferCopy],
+    ) {
+        unsafe {
+            self.handle
+                .cmd_copy_buffer(command_buffer, src_buffer, dst_buffer, regions)
         }
     }
 }

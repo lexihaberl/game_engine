@@ -1,5 +1,6 @@
 use super::device::Device;
 use super::shader::ShaderModule;
+use super::GPUMeshBuffers;
 use ash::vk;
 use nalgebra_glm::Vec4;
 use std::sync::Arc;
@@ -116,6 +117,7 @@ impl GraphicsPipeline {
         image_layout: vk::ImageLayout,
         render_extent: vk::Extent2D,
         clear_color: Option<vk::ClearColorValue>,
+        buffer: Option<&GPUMeshBuffers>,
     ) {
         let color_attachment_info = vk::RenderingAttachmentInfo {
             s_type: vk::StructureType::RENDERING_ATTACHMENT_INFO,
@@ -165,13 +167,26 @@ impl GraphicsPipeline {
             extent: render_extent,
         };
 
-        self.device.draw_geometry(
-            command_buffer,
-            &rendering_info,
-            self.pipeline,
-            view_port,
-            scissor,
-        )
+        match buffer {
+            Some(buffer) => {
+                self.device.draw_mesh(
+                    command_buffer,
+                    &rendering_info,
+                    self.pipeline,
+                    self.pipeline_layout,
+                    view_port,
+                    scissor,
+                    buffer,
+                );
+            }
+            None => self.device.draw_geometry(
+                command_buffer,
+                &rendering_info,
+                self.pipeline,
+                view_port,
+                scissor,
+            ),
+        }
     }
 }
 
@@ -382,11 +397,8 @@ impl<'a> Drop for GraphicsPipelineBuilder<'a> {
         log::debug!("Dropping GraphicsPipelineBuilder");
         //TODO: handle this better by refactoring other code (probably should write wrappers for
         //all vk structures myself with Drop stuff)
-        match self.pipeline_layout {
-            Some(_) => {
-                panic!("layout was not consumed. Did you call the GraphicsPipelineBuilder::build_pipeline() method?");
-            }
-            None => {}
+        if self.pipeline_layout.is_some() {
+            panic!("layout was not consumed. Did you call the GraphicsPipelineBuilder::build_pipeline() method?");
         }
     }
 }

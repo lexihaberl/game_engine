@@ -50,6 +50,7 @@ impl<'a> DescriptorLayoutBuilder<'a> {
         self.bindings.push(binding);
     }
 
+    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.bindings.clear();
     }
@@ -105,6 +106,7 @@ impl DescriptorAllocator {
         self.pool = Some(self.device.create_descriptor_pool(&pool_info));
     }
 
+    #[allow(dead_code)]
     pub fn clear_descriptors(&self) {
         if let Some(pool) = self.pool {
             self.device.reset_descriptor_pool(pool);
