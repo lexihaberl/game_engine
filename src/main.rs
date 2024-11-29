@@ -103,7 +103,7 @@ impl ApplicationHandler for GameEngine {
                     PhysicalKey::Code(KeyCode::KeyW) => {
                         log::info!("Pressing W")
                     }
-                    _ => log::info!("Something else was pressed"),
+                    _ => log::debug!("Something else was pressed"),
                 },
                 _ => (),
             }
@@ -121,7 +121,7 @@ impl ApplicationHandler for GameEngine {
                     window.request_redraw();
                 }
             }
-            _ => log::info!("Ignoring cause: {:?}", cause),
+            _ => log::warn!("Ignoring cause: {:?}", cause),
         }
     }
 }

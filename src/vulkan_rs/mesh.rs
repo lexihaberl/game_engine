@@ -188,7 +188,6 @@ impl MeshAsset {
             log::debug!("Loading mesh: {}", mesh_name);
 
             for primitive in mesh.primitives() {
-                println!("- Primitive #{}", primitive.index());
                 let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
                 let start_idx = indices.len();
                 let initial_vtx = vertices.len();
@@ -257,7 +256,11 @@ impl MeshAsset {
                             );
                         }
                     }
-                    None => log::warn!("No colors found in mesh"),
+                    None => log::warn!(
+                        "No colors found in mesh {} loaded from file {:?}",
+                        mesh_name,
+                        file_path
+                    ),
                 }
             }
             if overwrite_color_with_normals {
