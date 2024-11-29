@@ -931,11 +931,11 @@ impl Device {
             let buffer = asset.buffers();
             let surface = asset.surfaces()[0];
             let view_mtx = glm::translate(&glm::Mat4::identity(), &glm::vec3(0., 0., -5.));
-            let mut projection_mtx = glm::perspective(
+            let mut projection_mtx = glm::reversed_perspective_rh_zo(
                 draw_extent.width as f32 / draw_extent.height as f32,
                 70.0 * std::f32::consts::PI / 180.0,
                 0.1,
-                10000.0,
+                100.0,
             );
             projection_mtx[(1, 1)] *= -1.0;
             let world_matrix = projection_mtx * view_mtx;
