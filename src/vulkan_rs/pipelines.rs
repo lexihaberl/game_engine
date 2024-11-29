@@ -1,6 +1,6 @@
 use super::device::Device;
 use super::shader::ShaderModule;
-use super::GPUMeshBuffers;
+use super::MeshAsset;
 use ash::vk;
 use nalgebra_glm::Vec4;
 use std::sync::Arc;
@@ -110,20 +110,21 @@ pub struct GraphicsPipeline {
 }
 
 impl GraphicsPipeline {
-    pub fn draw(
+    pub fn begin_drawing(
         &self,
         command_buffer: vk::CommandBuffer,
-        image_view: vk::ImageView,
-        image_layout: vk::ImageLayout,
+        color_image: vk::ImageView,
+        depth_image: vk::ImageView,
+        color_image_layout: vk::ImageLayout,
+        depth_image_layout: vk::ImageLayout,
         render_extent: vk::Extent2D,
         clear_color: Option<vk::ClearColorValue>,
-        buffer: Option<&GPUMeshBuffers>,
     ) {
         let color_attachment_info = vk::RenderingAttachmentInfo {
             s_type: vk::StructureType::RENDERING_ATTACHMENT_INFO,
             p_next: std::ptr::null(),
-            image_view,
-            image_layout,
+            image_view: color_image,
+            image_layout: color_image_layout,
             load_op: if clear_color.is_some() {
                 vk::AttachmentLoadOp::CLEAR
             } else {
@@ -138,6 +139,22 @@ impl GraphicsPipeline {
             ..Default::default()
         };
 
+        let depth_attachment_info = vk::RenderingAttachmentInfo {
+            s_type: vk::StructureType::RENDERING_ATTACHMENT_INFO,
+            p_next: std::ptr::null(),
+            image_view: depth_image,
+            image_layout: depth_image_layout,
+            load_op: vk::AttachmentLoadOp::CLEAR,
+            store_op: vk::AttachmentStoreOp::STORE,
+            clear_value: vk::ClearValue {
+                depth_stencil: vk::ClearDepthStencilValue {
+                    depth: 1.0,
+                    stencil: 0,
+                },
+            },
+            ..Default::default()
+        };
+
         let rendering_info = vk::RenderingInfo {
             s_type: vk::StructureType::RENDERING_INFO,
             p_next: std::ptr::null(),
@@ -148,7 +165,7 @@ impl GraphicsPipeline {
             layer_count: 1,
             color_attachment_count: 1,
             p_color_attachments: &color_attachment_info,
-            p_depth_attachment: std::ptr::null(),
+            p_depth_attachment: &depth_attachment_info,
             p_stencil_attachment: std::ptr::null(),
             ..Default::default()
         };
@@ -167,26 +184,27 @@ impl GraphicsPipeline {
             extent: render_extent,
         };
 
-        match buffer {
-            Some(buffer) => {
-                self.device.draw_mesh(
-                    command_buffer,
-                    &rendering_info,
-                    self.pipeline,
-                    self.pipeline_layout,
-                    view_port,
-                    scissor,
-                    buffer,
-                );
-            }
-            None => self.device.draw_geometry(
-                command_buffer,
-                &rendering_info,
-                self.pipeline,
-                view_port,
-                scissor,
-            ),
-        }
+        self.device.begin_rendering(
+            command_buffer,
+            &rendering_info,
+            self.pipeline,
+            view_port,
+            scissor,
+        )
+    }
+
+    pub fn end_drawing(&self, command_buffer: vk::CommandBuffer) {
+        self.device.end_rendering(command_buffer);
+    }
+
+    pub fn draw(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        render_extent: vk::Extent2D,
+        mesh: &MeshAsset,
+    ) {
+        self.device
+            .draw_mesh(command_buffer, self.pipeline_layout, render_extent, mesh);
     }
 }
 
@@ -382,6 +400,23 @@ impl<'a> GraphicsPipelineBuilder<'a> {
         self.depth_stencil_info.depth_test_enable = vk::FALSE;
         self.depth_stencil_info.depth_write_enable = vk::FALSE;
         self.depth_stencil_info.depth_compare_op = vk::CompareOp::NEVER;
+        self.depth_stencil_info.depth_bounds_test_enable = vk::FALSE;
+        self.depth_stencil_info.stencil_test_enable = vk::FALSE;
+        self.depth_stencil_info.front = vk::StencilOpState::default();
+        self.depth_stencil_info.back = vk::StencilOpState::default();
+        self.depth_stencil_info.min_depth_bounds = 0.0;
+        self.depth_stencil_info.max_depth_bounds = 1.0;
+        self
+    }
+
+    pub fn enable_depth_test(
+        mut self,
+        depth_write_enable: vk::Bool32,
+        compare_op: vk::CompareOp,
+    ) -> Self {
+        self.depth_stencil_info.depth_test_enable = vk::TRUE;
+        self.depth_stencil_info.depth_write_enable = depth_write_enable;
+        self.depth_stencil_info.depth_compare_op = compare_op;
         self.depth_stencil_info.depth_bounds_test_enable = vk::FALSE;
         self.depth_stencil_info.stencil_test_enable = vk::FALSE;
         self.depth_stencil_info.front = vk::StencilOpState::default();

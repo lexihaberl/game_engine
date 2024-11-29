@@ -25,6 +25,7 @@ pub use instance::Instance;
 pub use instance::Version;
 pub use mesh::GPUDrawPushConstants;
 pub use mesh::GPUMeshBuffers;
+pub use mesh::MeshAsset;
 pub use mesh::Vertex;
 pub use pipelines::ComputePipeline;
 pub use pipelines::GraphicsPipeline;

@@ -4,6 +4,7 @@ use super::device::Device;
 use super::immediate_submit::ImmediateCommandData;
 use ash::vk;
 use nalgebra_glm as glm;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -136,5 +137,161 @@ pub struct GPUDrawPushConstants {
 impl GPUDrawPushConstants {
     pub fn as_bytes(&self) -> &[u8] {
         bytemuck::bytes_of(self)
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct GeometricSurface {
+    //idx of Surface in the buffer => we use one big buffer for whole mesh
+    start_idx: usize,
+    count: u32,
+}
+
+impl GeometricSurface {
+    pub fn start_idx(&self) -> usize {
+        self.start_idx
+    }
+    pub fn count(&self) -> u32 {
+        self.count
+    }
+}
+
+pub struct MeshAsset {
+    #[allow(dead_code)]
+    name: String,
+    surfaces: Vec<GeometricSurface>,
+    buffers: GPUMeshBuffers,
+}
+
+impl MeshAsset {
+    pub fn load_gltf(
+        device: Arc<Device>,
+        allocator: Arc<Mutex<Allocator>>,
+        immediate_command_data: &ImmediateCommandData,
+        file_path: &Path,
+        overwrite_color_with_normals: bool,
+    ) -> Result<Vec<Self>, gltf::Error> {
+        log::info!("Loading GLTF from file: {:?}", file_path);
+
+        let (gltf, buffers, _) = gltf::import(file_path)?;
+
+        let mut meshes = Vec::new();
+        let mut indices = Vec::new();
+        let mut vertices = Vec::new();
+        for mesh in gltf.meshes() {
+            // we store per mesh indices/vertices => clear them for each mesh
+            indices.clear();
+            vertices.clear();
+            let mut surfaces = Vec::new();
+
+            let mesh_name = mesh.name().unwrap_or("Unnamed Mesh");
+            log::debug!("Loading mesh: {}", mesh_name);
+
+            for primitive in mesh.primitives() {
+                println!("- Primitive #{}", primitive.index());
+                let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
+                let start_idx = indices.len();
+                let initial_vtx = vertices.len();
+                let mut count = 0;
+
+                if let Some(iter) = reader.read_indices() {
+                    let iter = iter.into_u32();
+                    indices.reserve(iter.len() + indices.len());
+                    count = iter.len() as u32;
+                    for index in iter {
+                        indices.push(index + initial_vtx as u32);
+                    }
+                }
+                surfaces.push(GeometricSurface { start_idx, count });
+
+                match reader.read_positions() {
+                    Some(iter) => {
+                        vertices.reserve(iter.len() + vertices.len());
+                        for vertex_position in iter {
+                            vertices.push(Vertex::new(
+                                glm::vec3(
+                                    vertex_position[0],
+                                    vertex_position[1],
+                                    vertex_position[2],
+                                ),
+                                0.0,
+                                glm::vec3(0.0, 0.0, 0.0),
+                                0.0,
+                                glm::vec4(1.0, 1.0, 1.0, 1.0),
+                            ));
+                        }
+                    }
+                    None => panic!("No positions found in mesh"),
+                }
+
+                match reader.read_normals() {
+                    Some(iter) => {
+                        for (i, vertex_normal) in iter.enumerate() {
+                            vertices[i + initial_vtx].normal =
+                                glm::vec3(vertex_normal[0], vertex_normal[1], vertex_normal[2]);
+                        }
+                    }
+                    None => log::warn!("No normals found in mesh"),
+                }
+
+                match reader.read_tex_coords(0) {
+                    Some(iter) => {
+                        let iter = iter.into_f32();
+                        for (i, vertex_uv) in iter.enumerate() {
+                            vertices[i + initial_vtx].uv_x = vertex_uv[0];
+                            vertices[i + initial_vtx].uv_y = vertex_uv[1];
+                        }
+                    }
+                    None => log::warn!("No UVs found in mesh"),
+                }
+
+                match reader.read_colors(0) {
+                    Some(iter) => {
+                        let iter = iter.into_rgba_f32();
+                        for (i, vertex_color) in iter.enumerate() {
+                            vertices[i + initial_vtx].color = glm::vec4(
+                                vertex_color[0],
+                                vertex_color[1],
+                                vertex_color[2],
+                                vertex_color[3],
+                            );
+                        }
+                    }
+                    None => log::warn!("No colors found in mesh"),
+                }
+            }
+            if overwrite_color_with_normals {
+                for vertex in &mut vertices {
+                    vertex.color =
+                        glm::vec4(vertex.normal.x, vertex.normal.y, vertex.normal.z, 1.0);
+                }
+            }
+            let new_mesh = MeshAsset {
+                name: mesh_name.to_string(),
+                surfaces,
+                buffers: GPUMeshBuffers::upload_mesh(
+                    device.clone(),
+                    allocator.clone(),
+                    &indices,
+                    &vertices,
+                    immediate_command_data,
+                ),
+            };
+            meshes.push(new_mesh);
+        }
+        Ok(meshes)
+    }
+
+    pub fn buffers(&self) -> &GPUMeshBuffers {
+        &self.buffers
+    }
+
+    pub fn surfaces(&self) -> &Vec<GeometricSurface> {
+        &self.surfaces
+    }
+
+    #[allow(dead_code)]
+    pub fn name(&self) -> &str {
+        &self.name
     }
 }

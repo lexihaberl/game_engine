@@ -15,6 +15,7 @@ use crate::vulkan_rs::GraphicsPipeline;
 use crate::vulkan_rs::GraphicsPipelineBuilder;
 use crate::vulkan_rs::ImmediateCommandData;
 use crate::vulkan_rs::Instance;
+use crate::vulkan_rs::MeshAsset;
 use crate::vulkan_rs::PhysicalDeviceSelector;
 use crate::vulkan_rs::PoolSizeRatio;
 use crate::vulkan_rs::ShaderModule;
@@ -25,6 +26,7 @@ use crate::vulkan_rs::Vertex;
 use ash::vk;
 use nalgebra_glm as glm;
 use raw_window_handle::HasDisplayHandle;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use winit::window::Window;
@@ -86,14 +88,14 @@ pub struct VulkanRenderer {
     frame_data: Vec<FrameData>,
     frame_index: usize,
     draw_image: AllocatedImage,
+    depth_image: AllocatedImage,
     descriptor_allocator: DescriptorAllocator,
     draw_image_descriptor: vk::DescriptorSet,
     draw_image_descriptor_layout: DescriptorSetLayout,
     gradient_pipeline: ComputePipeline,
     immediate_command_data: ImmediateCommandData,
-    triangle_pipeline: GraphicsPipeline,
     mesh_pipeline: GraphicsPipeline,
-    mesh: GPUMeshBuffers,
+    test_meshes: Vec<MeshAsset>,
 }
 
 impl VulkanRenderer {
@@ -192,39 +194,22 @@ impl VulkanRenderer {
         let (draw_image_descriptor, draw_image_descriptor_layout, descriptor_allocator) =
             VulkanRenderer::init_descriptors(device.clone(), &draw_image);
 
+        let depth_image_usage = vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT;
+        let depth_image = AllocatedImage::new(
+            device.clone(),
+            allocator.clone(),
+            vk::Format::D32_SFLOAT,
+            depth_image_usage,
+            draw_extent,
+            vk::ImageAspectFlags::DEPTH,
+        );
+
         let gradient_shader = ShaderModule::new(device.clone(), "shaders/gradient_color_comp.spv");
         let gradient_pipeline = ComputePipeline::new(
             device.clone(),
             &[draw_image_descriptor_layout.layout()],
             gradient_shader,
         );
-
-        let triangle_vert_shader = ShaderModule::new(device.clone(), "shaders/triangle_vert.spv");
-        let triangle_frag_shader = ShaderModule::new(device.clone(), "shaders/triangle_frag.spv");
-        let triangle_pipeline_layout_info = vk::PipelineLayoutCreateInfo {
-            s_type: vk::StructureType::PIPELINE_LAYOUT_CREATE_INFO,
-            p_next: std::ptr::null(),
-            flags: vk::PipelineLayoutCreateFlags::empty(),
-            set_layout_count: 0,
-            p_set_layouts: std::ptr::null(),
-            push_constant_range_count: 0,
-            p_push_constant_ranges: std::ptr::null(),
-            ..Default::default()
-        };
-        let triangle_pipeline_layout =
-            device.create_pipeline_layout(&triangle_pipeline_layout_info);
-        let triangle_pipeline = GraphicsPipelineBuilder::new()
-            .set_layout(triangle_pipeline_layout)
-            .set_shaders(&triangle_frag_shader, &triangle_vert_shader)
-            .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-            .set_polygon_mode(vk::PolygonMode::FILL)
-            .set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE)
-            .disable_multisampling()
-            .disable_blending()
-            .disable_depth_test()
-            .set_color_attachment_format(draw_image.format())
-            .set_depth_format(vk::Format::UNDEFINED)
-            .build_pipeline(device.clone());
 
         let mesh_frag_shader = ShaderModule::new(device.clone(), "shaders/triangle_frag.spv");
         let mesh_vert_shader = ShaderModule::new(device.clone(), "shaders/triangle_mesh_vert.spv");
@@ -252,52 +237,21 @@ impl VulkanRenderer {
             .set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE)
             .disable_multisampling()
             .disable_blending()
-            .disable_depth_test()
+            .enable_depth_test(vk::TRUE, vk::CompareOp::LESS_OR_EQUAL)
             .set_color_attachment_format(draw_image.format())
-            .set_depth_format(vk::Format::UNDEFINED)
+            .set_depth_format(depth_image.format())
             .build_pipeline(device.clone());
 
         let immediate_command_data = ImmediateCommandData::new(device.clone());
 
-        let vertices = [
-            Vertex::new(
-                glm::vec3(0.5, -0.5, 0.0),
-                0.0,
-                glm::vec3(0.0, 0.0, 0.0),
-                0.0,
-                glm::vec4(0.0, 0.0, 0.0, 1.0),
-            ),
-            Vertex::new(
-                glm::vec3(0.5, 0.5, 0.0),
-                0.0,
-                glm::vec3(0.0, 0.0, 0.0),
-                0.0,
-                glm::vec4(0.0, 0.0, 1.0, 1.0),
-            ),
-            Vertex::new(
-                glm::vec3(-0.5, -0.5, 0.0),
-                0.0,
-                glm::vec3(0.0, 0.0, 0.0),
-                0.0,
-                glm::vec4(1.0, 0.0, 0.0, 1.0),
-            ),
-            Vertex::new(
-                glm::vec3(-0.5, 0.5, 0.0),
-                0.0,
-                glm::vec3(0.0, 0.0, 0.0),
-                0.0,
-                glm::vec4(0.0, 1.0, 0.0, 1.0),
-            ),
-        ];
-        let indices = [0, 1, 2, 2, 1, 3];
-
-        let mesh = GPUMeshBuffers::upload_mesh(
+        let test_meshes = MeshAsset::load_gltf(
             device.clone(),
             allocator.clone(),
-            &indices,
-            &vertices,
             &immediate_command_data,
-        );
+            Path::new("./assets/basicmesh.glb"),
+            true,
+        )
+        .unwrap();
 
         VulkanRenderer {
             surface,
@@ -310,14 +264,14 @@ impl VulkanRenderer {
             frame_data,
             frame_index: 0,
             draw_image,
+            depth_image,
             descriptor_allocator,
             draw_image_descriptor_layout,
             draw_image_descriptor,
             gradient_pipeline,
             immediate_command_data,
-            triangle_pipeline,
             mesh_pipeline,
-            mesh,
+            test_meshes,
         }
     }
 
@@ -419,23 +373,27 @@ impl VulkanRenderer {
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
         );
 
-        self.triangle_pipeline.draw(
+        self.device.transition_image_layout(
+            command_buffer,
+            self.depth_image.image(),
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
+        );
+
+        self.mesh_pipeline.begin_drawing(
             command_buffer,
             draw_image_view,
+            self.depth_image.image_view(),
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
             draw_extent,
-            None,
             None,
         );
 
-        self.mesh_pipeline.draw(
-            command_buffer,
-            draw_image_view,
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            draw_extent,
-            None,
-            Some(&self.mesh),
-        );
+        self.mesh_pipeline
+            .draw(command_buffer, draw_extent, &self.test_meshes[2]);
+
+        self.mesh_pipeline.end_drawing(command_buffer);
 
         self.device.transition_image_layout(
             command_buffer,

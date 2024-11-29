@@ -3,7 +3,7 @@ use super::instance::Version;
 use super::pipelines::PushConstants;
 use super::window::Surface;
 use super::GPUDrawPushConstants;
-use super::GPUMeshBuffers;
+use super::MeshAsset;
 use ash::vk;
 use gpu_allocator::vulkan::Allocator;
 use nalgebra_glm as glm;
@@ -892,7 +892,7 @@ impl Device {
         }
     }
 
-    pub fn draw_geometry(
+    pub fn begin_rendering(
         &self,
         command_buffer: vk::CommandBuffer,
         rendering_info: &vk::RenderingInfo,
@@ -911,40 +911,39 @@ impl Device {
             self.handle
                 .cmd_set_viewport(command_buffer, 0, &[view_port]);
             self.handle.cmd_set_scissor(command_buffer, 0, &[scissor]);
-            self.handle.cmd_draw(command_buffer, 3, 1, 0, 0);
+        }
+    }
 
+    pub fn end_rendering(&self, command_buffer: vk::CommandBuffer) {
+        unsafe {
             self.handle.cmd_end_rendering(command_buffer);
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn draw_mesh(
         &self,
         command_buffer: vk::CommandBuffer,
-        rendering_info: &vk::RenderingInfo,
-        pipeline: vk::Pipeline,
         layout: vk::PipelineLayout,
-        view_port: vk::Viewport,
-        scissor: vk::Rect2D,
-        buffer: &GPUMeshBuffers,
+        draw_extent: vk::Extent2D,
+        asset: &MeshAsset,
     ) {
         unsafe {
-            self.handle
-                .cmd_begin_rendering(command_buffer, rendering_info);
-            self.handle.cmd_bind_pipeline(
-                command_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                pipeline,
+            let buffer = asset.buffers();
+            let surface = asset.surfaces()[0];
+            let view_mtx = glm::translate(&glm::Mat4::identity(), &glm::vec3(0., 0., -5.));
+            let mut projection_mtx = glm::perspective(
+                draw_extent.width as f32 / draw_extent.height as f32,
+                70.0 * std::f32::consts::PI / 180.0,
+                0.1,
+                10000.0,
             );
-            self.handle
-                .cmd_set_viewport(command_buffer, 0, &[view_port]);
-            self.handle.cmd_set_scissor(command_buffer, 0, &[scissor]);
+            projection_mtx[(1, 1)] *= -1.0;
+            let world_matrix = projection_mtx * view_mtx;
 
             let push_constants = GPUDrawPushConstants {
-                world_matrix: glm::Mat4::identity(),
+                world_matrix,
                 device_address: buffer.vertex_buffer_address(),
             };
-
             self.handle.cmd_push_constants(
                 command_buffer,
                 layout,
@@ -958,8 +957,14 @@ impl Device {
                 0,
                 vk::IndexType::UINT32,
             );
-            self.handle.cmd_draw_indexed(command_buffer, 6, 1, 0, 0, 0);
-            self.handle.cmd_end_rendering(command_buffer);
+            self.handle.cmd_draw_indexed(
+                command_buffer,
+                surface.count(),
+                1,
+                surface.start_idx() as u32,
+                0,
+                0,
+            );
         }
     }
 
