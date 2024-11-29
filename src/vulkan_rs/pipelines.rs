@@ -425,6 +425,36 @@ impl<'a> GraphicsPipelineBuilder<'a> {
         self.depth_stencil_info.max_depth_bounds = 1.0;
         self
     }
+
+    pub fn enable_blending_additive(mut self) -> Self {
+        self.color_blend_attachment.color_write_mask = vk::ColorComponentFlags::R
+            | vk::ColorComponentFlags::G
+            | vk::ColorComponentFlags::B
+            | vk::ColorComponentFlags::A;
+        self.color_blend_attachment.blend_enable = vk::TRUE;
+        self.color_blend_attachment.src_color_blend_factor = vk::BlendFactor::SRC_ALPHA;
+        self.color_blend_attachment.dst_color_blend_factor = vk::BlendFactor::ONE;
+        self.color_blend_attachment.color_blend_op = vk::BlendOp::ADD;
+        self.color_blend_attachment.src_alpha_blend_factor = vk::BlendFactor::ONE;
+        self.color_blend_attachment.dst_alpha_blend_factor = vk::BlendFactor::ZERO;
+        self.color_blend_attachment.alpha_blend_op = vk::BlendOp::ADD;
+        self
+    }
+
+    pub fn enable_blending_alphablend(mut self) -> Self {
+        self.color_blend_attachment.color_write_mask = vk::ColorComponentFlags::R
+            | vk::ColorComponentFlags::G
+            | vk::ColorComponentFlags::B
+            | vk::ColorComponentFlags::A;
+        self.color_blend_attachment.blend_enable = vk::TRUE;
+        self.color_blend_attachment.src_color_blend_factor = vk::BlendFactor::SRC_ALPHA;
+        self.color_blend_attachment.dst_color_blend_factor = vk::BlendFactor::ONE_MINUS_SRC_ALPHA;
+        self.color_blend_attachment.color_blend_op = vk::BlendOp::ADD;
+        self.color_blend_attachment.src_alpha_blend_factor = vk::BlendFactor::ONE;
+        self.color_blend_attachment.dst_alpha_blend_factor = vk::BlendFactor::ZERO;
+        self.color_blend_attachment.alpha_blend_op = vk::BlendOp::ADD;
+        self
+    }
 }
 
 impl<'a> Drop for GraphicsPipelineBuilder<'a> {

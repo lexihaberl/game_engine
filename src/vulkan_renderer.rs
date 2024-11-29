@@ -236,7 +236,7 @@ impl VulkanRenderer {
             .set_polygon_mode(vk::PolygonMode::FILL)
             .set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE)
             .disable_multisampling()
-            .disable_blending()
+            .enable_blending_additive()
             .enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL)
             .set_color_attachment_format(draw_image.format())
             .set_depth_format(depth_image.format())
