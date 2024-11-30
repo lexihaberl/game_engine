@@ -110,6 +110,7 @@ pub struct GraphicsPipeline {
 }
 
 impl GraphicsPipeline {
+    #[allow(clippy::too_many_arguments)]
     pub fn begin_drawing(
         &self,
         command_buffer: vk::CommandBuffer,

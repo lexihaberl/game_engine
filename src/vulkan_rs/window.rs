@@ -157,12 +157,19 @@ impl Surface {
         }
     }
 
-    pub fn create_swapchain(
-        self: &Arc<Self>,
+    fn create_swapchain_internal(
+        &self,
         physical_device: &vk::PhysicalDevice,
-        device: Arc<Device>,
+        device: &Device,
         window_size: LogicalSize<u32>,
-    ) -> Swapchain {
+    ) -> (
+        vk::SwapchainKHR,
+        ash::khr::swapchain::Device,
+        Vec<vk::Image>,
+        Vec<vk::ImageView>,
+        vk::Extent2D,
+        vk::Format,
+    ) {
         let support_details = self.query_support_details(physical_device);
 
         let surface_format = Self::choose_swap_surface_format(&support_details.surface_formats);
@@ -220,6 +227,24 @@ impl Surface {
         };
         let image_views = device.create_image_views(surface_format.format, &swapchain_images);
 
+        (
+            swapchain,
+            swapchain_loader,
+            swapchain_images,
+            image_views,
+            extent,
+            surface_format.format,
+        )
+    }
+
+    pub fn create_swapchain(
+        self: &Arc<Self>,
+        physical_device: &vk::PhysicalDevice,
+        device: Arc<Device>,
+        window_size: LogicalSize<u32>,
+    ) -> Swapchain {
+        let (swapchain, swapchain_loader, swapchain_images, image_views, extent, surface_format) =
+            self.create_swapchain_internal(physical_device, &device, window_size);
         let presentation_queue = device.get_presentation_queue();
 
         Swapchain {
@@ -231,7 +256,7 @@ impl Surface {
             image_views,
             extent,
             presentation_queue,
-            format: surface_format.format,
+            format: surface_format,
         }
     }
 }
@@ -300,6 +325,30 @@ impl Swapchain {
                 .queue_present(self.presentation_queue, &present_info)
                 .expect("Failed to present image");
         }
+    }
+
+    pub fn recreate(
+        &mut self,
+        physical_device: &vk::PhysicalDevice,
+        logical_size: LogicalSize<u32>,
+    ) {
+        log::debug!("Recreating swapchain to size: {:?}", logical_size);
+        unsafe {
+            for image_view in self.image_views.iter() {
+                self.device.destroy_image_view(*image_view);
+            }
+            self.swapchain_loader
+                .destroy_swapchain(self.swapchain, None)
+        }
+        let (swapchain, swapchain_loader, swapchain_images, image_views, extent, format) = self
+            .surface
+            .create_swapchain_internal(physical_device, &self.device, logical_size);
+        self.swapchain = swapchain;
+        self.swapchain_loader = swapchain_loader;
+        self.images = swapchain_images;
+        self.image_views = image_views;
+        self.extent = extent;
+        self.format = format;
     }
 
     pub fn extent(&self) -> vk::Extent2D {

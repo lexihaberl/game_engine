@@ -81,11 +81,8 @@ impl ApplicationHandler for GameEngine {
                     renderer.draw();
                 }
                 WindowEvent::Resized(physical_size) => {
-                    log::warn!(
-                        "Resizing not yet implemented. Should resize to {:?}",
-                        physical_size
-                    );
-                    //window_state.resize(physical_size);
+                    let logical_size = physical_size.to_logical(window.scale_factor());
+                    renderer.resize_swapchain(logical_size);
                 }
                 WindowEvent::KeyboardInput {
                     event:
@@ -132,7 +129,7 @@ fn main() {
 
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let window_settings = WindowSettings::new("LexEngine", 800, 600);
+    let window_settings = WindowSettings::new("LexEngine", 1800, 1000);
     let mut game_engine = GameEngine::new(window_settings);
 
     event_loop

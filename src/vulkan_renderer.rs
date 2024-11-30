@@ -10,7 +10,6 @@ use crate::vulkan_rs::DescriptorSetLayout;
 use crate::vulkan_rs::Device;
 use crate::vulkan_rs::EngineInfo;
 use crate::vulkan_rs::GPUDrawPushConstants;
-use crate::vulkan_rs::GPUMeshBuffers;
 use crate::vulkan_rs::GraphicsPipeline;
 use crate::vulkan_rs::GraphicsPipelineBuilder;
 use crate::vulkan_rs::ImmediateCommandData;
@@ -22,9 +21,7 @@ use crate::vulkan_rs::ShaderModule;
 use crate::vulkan_rs::Surface;
 use crate::vulkan_rs::Swapchain;
 use crate::vulkan_rs::Version;
-use crate::vulkan_rs::Vertex;
 use ash::vk;
-use nalgebra_glm as glm;
 use raw_window_handle::HasDisplayHandle;
 use std::path::Path;
 use std::sync::Arc;
@@ -96,6 +93,8 @@ pub struct VulkanRenderer {
     immediate_command_data: ImmediateCommandData,
     mesh_pipeline: GraphicsPipeline,
     test_meshes: Vec<MeshAsset>,
+    resize_swapchain: Option<winit::dpi::LogicalSize<u32>>,
+    render_scale: f32,
 }
 
 impl VulkanRenderer {
@@ -272,6 +271,8 @@ impl VulkanRenderer {
             immediate_command_data,
             mesh_pipeline,
             test_meshes,
+            resize_swapchain: None,
+            render_scale: 1.0,
         }
     }
 
@@ -330,6 +331,10 @@ impl VulkanRenderer {
     }
 
     pub fn draw(&mut self) {
+        if let Some(logical_size) = self.resize_swapchain.take() {
+            self.device.wait_idle();
+            self.swapchain.recreate(&self.physical_device, logical_size);
+        }
         let current_frame = self.get_current_frame();
         // MAX_IN_FLIGHT_FRAMES is 2 => we wait for the frame before the previous one to finish.
         self.device
@@ -349,8 +354,10 @@ impl VulkanRenderer {
         let draw_image = self.draw_image.image();
         let draw_extent = self.draw_image.extent();
         let draw_extent = vk::Extent2D {
-            width: draw_extent.width,
-            height: draw_extent.height,
+            width: (std::cmp::min(draw_extent.width, self.swapchain.extent().width) as f32
+                * self.render_scale) as u32,
+            height: (std::cmp::min(draw_extent.height, self.swapchain.extent().height) as f32
+                * self.render_scale) as u32,
         };
         let draw_image_view = self.draw_image.image_view();
 
@@ -501,6 +508,10 @@ impl VulkanRenderer {
 
     pub fn wait_idle(&self) {
         self.device.wait_idle();
+    }
+
+    pub fn resize_swapchain(&mut self, logical_size: winit::dpi::LogicalSize<u32>) {
+        self.resize_swapchain = Some(logical_size);
     }
 }
 
