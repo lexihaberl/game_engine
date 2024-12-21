@@ -780,12 +780,8 @@ impl Device {
     pub fn allocate_descriptor_sets(
         &self,
         allocate_info: &vk::DescriptorSetAllocateInfo,
-    ) -> Vec<vk::DescriptorSet> {
-        unsafe {
-            self.handle
-                .allocate_descriptor_sets(allocate_info)
-                .expect("I pray that I never run out of memory")
-        }
+    ) -> Result<Vec<vk::DescriptorSet>, vk::Result> {
+        unsafe { self.handle.allocate_descriptor_sets(allocate_info) }
     }
 
     pub fn update_descriptor_sets(&self, write_sets: &[vk::WriteDescriptorSet]) {

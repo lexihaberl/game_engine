@@ -1,12 +1,15 @@
 use crate::vulkan_rs::debug;
 use crate::vulkan_rs::window;
+use crate::vulkan_rs::AllocatedBuffer;
 use crate::vulkan_rs::AllocatedImage;
 use crate::vulkan_rs::Allocator;
 use crate::vulkan_rs::AppInfo;
 use crate::vulkan_rs::ComputePipeline;
 use crate::vulkan_rs::DescriptorAllocator;
+use crate::vulkan_rs::DescriptorAllocatorGrowable;
 use crate::vulkan_rs::DescriptorLayoutBuilder;
 use crate::vulkan_rs::DescriptorSetLayout;
+use crate::vulkan_rs::DescriptorWriter;
 use crate::vulkan_rs::Device;
 use crate::vulkan_rs::EngineInfo;
 use crate::vulkan_rs::GPUDrawPushConstants;
@@ -22,6 +25,7 @@ use crate::vulkan_rs::Surface;
 use crate::vulkan_rs::Swapchain;
 use crate::vulkan_rs::Version;
 use ash::vk;
+use nalgebra_glm as glm;
 use raw_window_handle::HasDisplayHandle;
 use std::path::Path;
 use std::sync::Arc;
@@ -35,6 +39,8 @@ pub struct FrameData {
     image_available_semaphore: vk::Semaphore,
     result_presentable_semaphore: vk::Semaphore,
     in_flight_fence: vk::Fence,
+    frame_descriptors: DescriptorAllocatorGrowable,
+    // gpu_scene_data_buffer: AllocatedBuffer,
 }
 
 impl FrameData {
@@ -44,6 +50,26 @@ impl FrameData {
         let image_available_semaphore = device.create_semaphore();
         let result_presentable_semaphore = device.create_semaphore();
         let in_flight_fence = device.create_fence(vk::FenceCreateFlags::SIGNALED);
+        let frame_sizes = vec![
+            PoolSizeRatio {
+                descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
+                ratio: 3.0,
+            },
+            PoolSizeRatio {
+                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+                ratio: 3.0,
+            },
+            PoolSizeRatio {
+                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+                ratio: 3.0,
+            },
+            PoolSizeRatio {
+                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                ratio: 4.0,
+            },
+        ];
+
+        let frame_descriptors = DescriptorAllocatorGrowable::new(device.clone(), frame_sizes, 1000);
         FrameData {
             device,
             command_pool,
@@ -51,6 +77,7 @@ impl FrameData {
             image_available_semaphore,
             result_presentable_semaphore,
             in_flight_fence,
+            frame_descriptors,
         }
     }
 }
@@ -64,6 +91,29 @@ impl Drop for FrameData {
         self.device
             .destroy_semaphore(self.result_presentable_semaphore);
         self.device.destroy_fence(self.in_flight_fence);
+    }
+}
+
+#[repr(C)]
+pub struct GPUSceneData {
+    view: glm::Mat4,
+    proj: glm::Mat4,
+    view_proj: glm::Mat4,
+    ambient_color: glm::Vec4,
+    sunlight_dir: glm::Vec4,
+    sunlight_color: glm::Vec4,
+}
+
+impl Default for GPUSceneData {
+    fn default() -> Self {
+        GPUSceneData {
+            view: glm::identity(),
+            proj: glm::identity(),
+            view_proj: glm::identity(),
+            ambient_color: glm::vec4(0.2, 0.2, 0.2, 1.0),
+            sunlight_dir: glm::vec4(0.0, 0.0, -1.0, 10.0),
+            sunlight_color: glm::vec4(1.0, 1.0, 1.0, 1.0),
+        }
     }
 }
 
@@ -95,6 +145,8 @@ pub struct VulkanRenderer {
     test_meshes: Vec<MeshAsset>,
     resize_swapchain: Option<winit::dpi::LogicalSize<u32>>,
     render_scale: f32,
+    scene_data: GPUSceneData,
+    scene_data_descriptor_layout: DescriptorSetLayout,
 }
 
 impl VulkanRenderer {
@@ -190,8 +242,12 @@ impl VulkanRenderer {
             draw_extent,
             vk::ImageAspectFlags::COLOR,
         );
-        let (draw_image_descriptor, draw_image_descriptor_layout, descriptor_allocator) =
-            VulkanRenderer::init_descriptors(device.clone(), &draw_image);
+        let (
+            draw_image_descriptor,
+            draw_image_descriptor_layout,
+            descriptor_allocator,
+            scene_data_descriptor_layout,
+        ) = VulkanRenderer::init_descriptors(device.clone(), &draw_image);
 
         let depth_image_usage = vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT;
         let depth_image = AllocatedImage::new(
@@ -273,13 +329,20 @@ impl VulkanRenderer {
             test_meshes,
             resize_swapchain: None,
             render_scale: 1.0,
+            scene_data_descriptor_layout,
+            scene_data: GPUSceneData::default(),
         }
     }
 
     fn init_descriptors(
         device: Arc<Device>,
         draw_image: &AllocatedImage,
-    ) -> (vk::DescriptorSet, DescriptorSetLayout, DescriptorAllocator) {
+    ) -> (
+        vk::DescriptorSet,
+        DescriptorSetLayout,
+        DescriptorAllocator,
+        DescriptorSetLayout,
+    ) {
         let ratio_sizes = vec![PoolSizeRatio {
             descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
             ratio: 1.0,
@@ -300,29 +363,24 @@ impl VulkanRenderer {
         let draw_image_descriptor =
             descriptor_allocator.allocate(draw_image_descriptor_layout.layout());
 
-        let image_info = vk::DescriptorImageInfo {
-            image_view: draw_image.image_view(),
-            image_layout: vk::ImageLayout::GENERAL,
-            sampler: vk::Sampler::null(),
-        };
+        let mut writer = DescriptorWriter::new();
+        writer.add_storage_image(0, draw_image.image_view());
+        writer.update_descriptor_set(&device, draw_image_descriptor);
 
-        let draw_image_write: vk::WriteDescriptorSet = vk::WriteDescriptorSet {
-            s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
-            p_next: std::ptr::null(),
-            dst_binding: 0,
-            dst_set: draw_image_descriptor,
-            descriptor_count: 1,
-            descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
-            p_image_info: &image_info,
-            ..Default::default()
-        };
-
-        device.update_descriptor_sets(&[draw_image_write]);
+        let mut builder = DescriptorLayoutBuilder::new();
+        builder.add_binding(
+            0,
+            vk::DescriptorType::UNIFORM_BUFFER,
+            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+        );
+        let scene_data_descriptor_layout =
+            builder.build(device.clone(), vk::DescriptorSetLayoutCreateFlags::empty());
 
         (
             draw_image_descriptor,
             draw_image_descriptor_layout,
             descriptor_allocator,
+            scene_data_descriptor_layout,
         )
     }
 
@@ -330,16 +388,23 @@ impl VulkanRenderer {
         &self.frame_data[self.frame_index % MAX_FRAMES_IN_FLIGHT]
     }
 
+    fn get_current_frame_mut(&mut self) -> &mut FrameData {
+        &mut self.frame_data[self.frame_index % MAX_FRAMES_IN_FLIGHT]
+    }
+
     pub fn draw(&mut self) {
         if let Some(logical_size) = self.resize_swapchain.take() {
             self.device.wait_idle();
             self.swapchain.recreate(&self.physical_device, logical_size);
         }
-        let current_frame = self.get_current_frame();
         // MAX_IN_FLIGHT_FRAMES is 2 => we wait for the frame before the previous one to finish.
         self.device
-            .wait_for_fence(&current_frame.in_flight_fence, 1_000_000_000); //1E9 ns -> 1s
-        self.device.reset_fence(&current_frame.in_flight_fence);
+            .wait_for_fence(&self.get_current_frame().in_flight_fence, 1_000_000_000); //1E9 ns -> 1s
+        self.device
+            .reset_fence(&self.get_current_frame().in_flight_fence);
+        self.get_current_frame_mut().frame_descriptors.clear_pools();
+
+        let current_frame = self.get_current_frame();
 
         let (presentation_image_index, presentation_image) = self
             .swapchain

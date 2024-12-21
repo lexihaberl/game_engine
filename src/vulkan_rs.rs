@@ -10,11 +10,14 @@ mod shader;
 mod utils;
 pub mod window;
 
+pub use allocation::AllocatedBuffer;
 pub use allocation::AllocatedImage;
 pub use allocation::Allocator;
 pub use descriptor::DescriptorAllocator;
+pub use descriptor::DescriptorAllocatorGrowable;
 pub use descriptor::DescriptorLayoutBuilder;
 pub use descriptor::DescriptorSetLayout;
+pub use descriptor::DescriptorWriter;
 pub use descriptor::PoolSizeRatio;
 pub use device::Device;
 pub use device::PhysicalDeviceSelector;
