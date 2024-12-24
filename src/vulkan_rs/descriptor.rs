@@ -287,6 +287,17 @@ impl<'a> DescriptorWriter<'a> {
             writes: Vec::new(),
         }
     }
+
+    pub fn add_uniform_buffer(&mut self, binding: i32, buffer: vk::Buffer, size: u64, offset: u64) {
+        self.add_buffer(
+            binding,
+            buffer,
+            size,
+            offset,
+            vk::DescriptorType::UNIFORM_BUFFER,
+        );
+    }
+
     pub fn add_buffer(
         &mut self,
         binding: i32,

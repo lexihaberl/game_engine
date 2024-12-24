@@ -40,11 +40,11 @@ pub struct FrameData {
     result_presentable_semaphore: vk::Semaphore,
     in_flight_fence: vk::Fence,
     frame_descriptors: DescriptorAllocatorGrowable,
-    // gpu_scene_data_buffer: AllocatedBuffer,
+    gpu_scene_data_buffer: AllocatedBuffer,
 }
 
 impl FrameData {
-    fn new(device: Arc<Device>) -> FrameData {
+    fn new(device: Arc<Device>, allocator: Arc<Mutex<Allocator>>) -> FrameData {
         let command_pool = device.create_command_pool();
         let command_buffer = device.create_command_buffer(command_pool);
         let image_available_semaphore = device.create_semaphore();
@@ -70,6 +70,14 @@ impl FrameData {
         ];
 
         let frame_descriptors = DescriptorAllocatorGrowable::new(device.clone(), frame_sizes, 1000);
+        let gpu_scene_data_buffer = AllocatedBuffer::new(
+            device.clone(),
+            allocator,
+            "GPU Scene Data Buffer",
+            vk::BufferUsageFlags::UNIFORM_BUFFER,
+            std::mem::size_of::<GPUSceneData>() as u64,
+            gpu_allocator::MemoryLocation::CpuToGpu,
+        );
         FrameData {
             device,
             command_pool,
@@ -78,6 +86,7 @@ impl FrameData {
             result_presentable_semaphore,
             in_flight_fence,
             frame_descriptors,
+            gpu_scene_data_buffer,
         }
     }
 }
@@ -95,6 +104,7 @@ impl Drop for FrameData {
 }
 
 #[repr(C)]
+#[derive(Debug, Clone, Copy)]
 pub struct GPUSceneData {
     view: glm::Mat4,
     proj: glm::Mat4,
@@ -218,12 +228,11 @@ impl VulkanRenderer {
             window.inner_size().to_logical(window.scale_factor()),
         );
 
+        let allocator = Allocator::new(device.clone());
         let mut frame_data = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
-            frame_data.push(FrameData::new(device.clone()));
+            frame_data.push(FrameData::new(device.clone(), allocator.clone()));
         }
-
-        let allocator = Allocator::new(device.clone());
 
         let draw_extent = vk::Extent3D {
             width: window.inner_size().width,
@@ -462,6 +471,21 @@ impl VulkanRenderer {
             None,
         );
 
+        let scene_data = GPUSceneData::default();
+        self.get_current_frame_mut()
+            .gpu_scene_data_buffer
+            .copy_from_slice(&[scene_data], 0);
+        let descriptor_set = self.frame_data[self.frame_index % MAX_FRAMES_IN_FLIGHT]
+            .frame_descriptors
+            .allocate(self.scene_data_descriptor_layout.layout());
+        let mut writer = DescriptorWriter::new();
+        writer.add_uniform_buffer(
+            0,
+            self.get_current_frame_mut().gpu_scene_data_buffer.buffer(),
+            std::mem::size_of::<GPUSceneData>() as u64,
+            0,
+        );
+        writer.update_descriptor_set(&self.device, descriptor_set);
         self.mesh_pipeline
             .draw(command_buffer, draw_extent, &self.test_meshes[2]);
 
@@ -498,6 +522,7 @@ impl VulkanRenderer {
 
         self.device.end_command_buffer(command_buffer);
 
+        let current_frame = self.get_current_frame();
         self.submit_to_queue(current_frame, current_frame.in_flight_fence);
         self.swapchain.present_image(
             current_frame.result_presentable_semaphore,
