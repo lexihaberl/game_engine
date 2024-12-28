@@ -207,6 +207,10 @@ impl GraphicsPipeline {
         self.device
             .draw_mesh(command_buffer, self.pipeline_layout, render_extent, mesh);
     }
+
+    pub fn layout(&self) -> vk::PipelineLayout {
+        self.pipeline_layout
+    }
 }
 
 impl Drop for GraphicsPipeline {

@@ -1,3 +1,4 @@
+use super::ImmediateCommandData;
 use crate::vulkan_rs::Device;
 use ash::vk;
 use gpu_allocator::vulkan::Allocation;
@@ -97,15 +98,16 @@ impl AllocatedImage {
         usage_flags: vk::ImageUsageFlags,
         extent: vk::Extent3D,
         aspect_flags: vk::ImageAspectFlags,
+        mip_levels: u32,
     ) -> Self {
-        let image = device.create_image(format, usage_flags, extent);
+        let image = device.create_image(format, usage_flags, extent, mip_levels);
         let image_mem_req = device.get_image_memory_requirements(image);
 
         let allocation = allocator
             .lock()
             .expect("Mutex has been poisoned and i dont wanan handle it yet")
             .allocate_image(image, image_mem_req);
-        let image_view = device.create_image_view(image, format, aspect_flags);
+        let image_view = device.create_image_view(image, format, aspect_flags, mip_levels);
         Self {
             device,
             allocator,
@@ -115,6 +117,128 @@ impl AllocatedImage {
             extent,
             format,
         }
+    }
+
+    pub fn new_draw_color_image(
+        device: Arc<Device>,
+        allocator: Arc<Mutex<Allocator>>,
+        extent: vk::Extent3D,
+    ) -> Self {
+        let usage = vk::ImageUsageFlags::COLOR_ATTACHMENT
+            | vk::ImageUsageFlags::STORAGE
+            | vk::ImageUsageFlags::TRANSFER_SRC
+            | vk::ImageUsageFlags::TRANSFER_DST;
+        let format = vk::Format::R16G16B16A16_SFLOAT;
+        let aspect = vk::ImageAspectFlags::COLOR;
+        Self::new(device, allocator, format, usage, extent, aspect, 1)
+    }
+
+    pub fn new_depth_image(
+        device: Arc<Device>,
+        allocator: Arc<Mutex<Allocator>>,
+        extent: vk::Extent3D,
+    ) -> Self {
+        let usage = vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT;
+        let format = vk::Format::D32_SFLOAT;
+        let aspect_flags = vk::ImageAspectFlags::DEPTH;
+        Self::new(device, allocator, format, usage, extent, aspect_flags, 1)
+    }
+
+    fn allocate_texture(
+        device: Arc<Device>,
+        allocator: Arc<Mutex<Allocator>>,
+        format: vk::Format,
+        usage_flags: vk::ImageUsageFlags,
+        extent: vk::Extent3D,
+        mip_mapped: bool,
+    ) -> Self {
+        let mip_levels = if mip_mapped {
+            f32::floor(f32::log2(u32::max(extent.width, extent.height) as f32)) as u32 + 1
+        } else {
+            1
+        };
+        let aspect_flags = if format == vk::Format::D32_SFLOAT {
+            vk::ImageAspectFlags::DEPTH
+        } else {
+            vk::ImageAspectFlags::COLOR
+        };
+        Self::new(
+            device,
+            allocator,
+            format,
+            usage_flags,
+            extent,
+            aspect_flags,
+            mip_levels,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_texture<T: Copy>(
+        data: &[T],
+        device: Arc<Device>,
+        allocator: Arc<Mutex<Allocator>>,
+        format: vk::Format,
+        usage_flags: vk::ImageUsageFlags,
+        extent: vk::Extent3D,
+        mip_mapped: bool,
+        immediate_command: &ImmediateCommandData,
+    ) -> Self {
+        let size = extent.width * extent.height * extent.depth * 4;
+        let mut staging_buffer = AllocatedBuffer::new(
+            device.clone(),
+            allocator.clone(),
+            "Texture Staging Buffer",
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            size as u64,
+            gpu_allocator::MemoryLocation::CpuToGpu,
+        );
+        staging_buffer.copy_from_slice(data, 0);
+
+        let image = Self::allocate_texture(
+            device.clone(),
+            allocator.clone(),
+            format,
+            usage_flags | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::TRANSFER_SRC,
+            extent,
+            mip_mapped,
+        );
+        immediate_command.immediate_submit(|device, cmd| {
+            let image = image.image();
+            device.transition_image_layout(
+                cmd,
+                image,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            );
+            let copy_region = vk::BufferImageCopy {
+                buffer_offset: 0,
+                buffer_row_length: 0,
+                buffer_image_height: 0,
+                image_subresource: vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                image_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
+                image_extent: extent,
+            };
+            device.cmd_copy_buffer_to_image(
+                cmd,
+                staging_buffer.buffer(),
+                image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[copy_region],
+            );
+            device.transition_image_layout(
+                cmd,
+                image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            );
+        });
+        image
     }
 
     pub fn image(&self) -> vk::Image {
@@ -154,6 +278,7 @@ pub struct AllocatedBuffer {
     allocator: Arc<Mutex<Allocator>>,
     buffer: vk::Buffer,
     allocation: Option<Allocation>,
+    cpu_accesible: bool,
 }
 
 impl AllocatedBuffer {
@@ -171,11 +296,13 @@ impl AllocatedBuffer {
             .lock()
             .expect("Mutex has been poisoned and i dont wanan handle it yet")
             .allocate_buffer(buffer_name, buffer, mem_requirements, location);
+        let cpu_accesible = location == gpu_allocator::MemoryLocation::CpuToGpu;
         Self {
             device,
             allocator,
             buffer,
             allocation: Some(allocation),
+            cpu_accesible,
         }
     }
 
@@ -184,11 +311,13 @@ impl AllocatedBuffer {
     }
 
     pub fn copy_from_slice<T: Copy>(&mut self, data: &[T], offset: usize) {
+        if !self.cpu_accesible {
+            panic!("Cannot copy to buffer that is not cpu accesible");
+        }
         if let Some(allocation) = &mut self.allocation {
             //TODO: maybe add some alignment stuff? refer to gpu allocator crate
             let copy_record = presser::copy_from_slice_to_offset(data, allocation, offset)
                 .expect("I pray that this never fails");
-            log::debug!("Copy record: {:?}", copy_record);
             assert!(copy_record.copy_start_offset == offset);
         }
     }

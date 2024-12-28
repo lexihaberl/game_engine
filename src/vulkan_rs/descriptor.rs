@@ -372,6 +372,7 @@ impl<'a> DescriptorWriter<'a> {
         );
     }
 
+    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.buffer_infos.clear();
         self.image_infos.clear();

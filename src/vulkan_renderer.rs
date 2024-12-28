@@ -20,6 +20,7 @@ use crate::vulkan_rs::Instance;
 use crate::vulkan_rs::MeshAsset;
 use crate::vulkan_rs::PhysicalDeviceSelector;
 use crate::vulkan_rs::PoolSizeRatio;
+use crate::vulkan_rs::Sampler;
 use crate::vulkan_rs::ShaderModule;
 use crate::vulkan_rs::Surface;
 use crate::vulkan_rs::Swapchain;
@@ -69,7 +70,10 @@ impl FrameData {
             },
         ];
 
-        let frame_descriptors = DescriptorAllocatorGrowable::new(device.clone(), frame_sizes, 1000);
+        let mut frame_descriptors =
+            DescriptorAllocatorGrowable::new(device.clone(), frame_sizes, 1000);
+        frame_descriptors.init_pool();
+
         let gpu_scene_data_buffer = AllocatedBuffer::new(
             device.clone(),
             allocator,
@@ -157,6 +161,13 @@ pub struct VulkanRenderer {
     render_scale: f32,
     scene_data: GPUSceneData,
     scene_data_descriptor_layout: DescriptorSetLayout,
+    white_texture: AllocatedImage,
+    black_texture: AllocatedImage,
+    grey_texture: AllocatedImage,
+    error_checkerboard_texture: AllocatedImage,
+    default_sampler_linear: Sampler,
+    default_sampler_nearest: Sampler,
+    single_image_descriptor_layout: DescriptorSetLayout,
 }
 
 impl VulkanRenderer {
@@ -239,34 +250,18 @@ impl VulkanRenderer {
             height: window.inner_size().height,
             depth: 1,
         };
-        let draw_image_usage = vk::ImageUsageFlags::COLOR_ATTACHMENT
-            | vk::ImageUsageFlags::TRANSFER_SRC
-            | vk::ImageUsageFlags::TRANSFER_DST
-            | vk::ImageUsageFlags::STORAGE;
-        let draw_image = AllocatedImage::new(
-            device.clone(),
-            allocator.clone(),
-            vk::Format::R16G16B16A16_SFLOAT,
-            draw_image_usage,
-            draw_extent,
-            vk::ImageAspectFlags::COLOR,
-        );
+        let draw_image =
+            AllocatedImage::new_draw_color_image(device.clone(), allocator.clone(), draw_extent);
         let (
             draw_image_descriptor,
             draw_image_descriptor_layout,
             descriptor_allocator,
             scene_data_descriptor_layout,
+            single_image_descriptor_layout,
         ) = VulkanRenderer::init_descriptors(device.clone(), &draw_image);
 
-        let depth_image_usage = vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT;
-        let depth_image = AllocatedImage::new(
-            device.clone(),
-            allocator.clone(),
-            vk::Format::D32_SFLOAT,
-            depth_image_usage,
-            draw_extent,
-            vk::ImageAspectFlags::DEPTH,
-        );
+        let depth_image =
+            AllocatedImage::new_depth_image(device.clone(), allocator.clone(), draw_extent);
 
         let gradient_shader = ShaderModule::new(device.clone(), "shaders/gradient_color_comp.spv");
         let gradient_pipeline = ComputePipeline::new(
@@ -275,7 +270,7 @@ impl VulkanRenderer {
             gradient_shader,
         );
 
-        let mesh_frag_shader = ShaderModule::new(device.clone(), "shaders/triangle_frag.spv");
+        let mesh_frag_shader = ShaderModule::new(device.clone(), "shaders/tex_image_frag.spv");
         let mesh_vert_shader = ShaderModule::new(device.clone(), "shaders/triangle_mesh_vert.spv");
         let push_constants = vk::PushConstantRange {
             stage_flags: vk::ShaderStageFlags::VERTEX,
@@ -286,8 +281,8 @@ impl VulkanRenderer {
             s_type: vk::StructureType::PIPELINE_LAYOUT_CREATE_INFO,
             p_next: std::ptr::null(),
             flags: vk::PipelineLayoutCreateFlags::empty(),
-            set_layout_count: 0,
-            p_set_layouts: std::ptr::null(),
+            set_layout_count: 1,
+            p_set_layouts: &single_image_descriptor_layout.layout(),
             push_constant_range_count: 1,
             p_push_constant_ranges: &push_constants,
             ..Default::default()
@@ -300,7 +295,7 @@ impl VulkanRenderer {
             .set_polygon_mode(vk::PolygonMode::FILL)
             .set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE)
             .disable_multisampling()
-            .enable_blending_additive()
+            .disable_blending()
             .enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL)
             .set_color_attachment_format(draw_image.format())
             .set_depth_format(depth_image.format())
@@ -316,6 +311,18 @@ impl VulkanRenderer {
             true,
         )
         .unwrap();
+
+        let (white_texture, black_texture, grey_texture, error_checkerboard_texture) =
+            VulkanRenderer::init_default_textures(
+                device.clone(),
+                allocator.clone(),
+                &immediate_command_data,
+            );
+
+        let default_sampler_linear =
+            Sampler::new(device.clone(), vk::Filter::LINEAR, vk::Filter::LINEAR);
+        let default_sampler_nearest =
+            Sampler::new(device.clone(), vk::Filter::NEAREST, vk::Filter::NEAREST);
 
         VulkanRenderer {
             surface,
@@ -340,7 +347,112 @@ impl VulkanRenderer {
             render_scale: 1.0,
             scene_data_descriptor_layout,
             scene_data: GPUSceneData::default(),
+            white_texture,
+            black_texture,
+            grey_texture,
+            error_checkerboard_texture,
+            default_sampler_linear,
+            default_sampler_nearest,
+            single_image_descriptor_layout,
         }
+    }
+
+    #[allow(clippy::identity_op)]
+    fn pack_unorm4x8(vec: [f32; 4]) -> u32 {
+        let r = (vec[0].clamp(0.0, 1.0) * 255.0).round() as u32;
+        let g = (vec[1].clamp(0.0, 1.0) * 255.0).round() as u32;
+        let b = (vec[2].clamp(0.0, 1.0) * 255.0).round() as u32;
+        let a = (vec[3].clamp(0.0, 1.0) * 255.0).round() as u32;
+
+        (r << 0) | (g << 8) | (b << 16) | (a << 24)
+    }
+
+    fn init_default_textures(
+        device: Arc<Device>,
+        allocator: Arc<Mutex<Allocator>>,
+        immediate_command: &ImmediateCommandData,
+    ) -> (
+        AllocatedImage,
+        AllocatedImage,
+        AllocatedImage,
+        AllocatedImage,
+    ) {
+        let white = Self::pack_unorm4x8([1.0, 1.0, 1.0, 1.0]);
+        let white_texture = AllocatedImage::new_texture(
+            &[white],
+            device.clone(),
+            allocator.clone(),
+            vk::Format::R8G8B8A8_UNORM,
+            vk::ImageUsageFlags::SAMPLED,
+            vk::Extent3D {
+                width: 1,
+                height: 1,
+                depth: 1,
+            },
+            false,
+            immediate_command,
+        );
+
+        let black = Self::pack_unorm4x8([0.0, 0.0, 0.0, 1.0]);
+        let black_texture = AllocatedImage::new_texture(
+            &[black],
+            device.clone(),
+            allocator.clone(),
+            vk::Format::R8G8B8A8_UNORM,
+            vk::ImageUsageFlags::SAMPLED,
+            vk::Extent3D {
+                width: 1,
+                height: 1,
+                depth: 1,
+            },
+            false,
+            immediate_command,
+        );
+
+        let grey = Self::pack_unorm4x8([0.67, 0.67, 0.67, 1.0]);
+        let grey_texture = AllocatedImage::new_texture(
+            &[grey],
+            device.clone(),
+            allocator.clone(),
+            vk::Format::R8G8B8A8_UNORM,
+            vk::ImageUsageFlags::SAMPLED,
+            vk::Extent3D {
+                width: 1,
+                height: 1,
+                depth: 1,
+            },
+            false,
+            immediate_command,
+        );
+
+        const SIZE: usize = 16;
+        let magenta = Self::pack_unorm4x8([1.0, 0.0, 1.0, 1.0]);
+        let mut checkerboard = [0u32; SIZE * SIZE];
+        for i in 0..SIZE {
+            for j in 0..SIZE {
+                checkerboard[i * SIZE + j] = if (i + j) % 2 == 0 { black } else { magenta };
+            }
+        }
+        let error_checkerboard_texture = AllocatedImage::new_texture(
+            &checkerboard,
+            device,
+            allocator,
+            vk::Format::R8G8B8A8_UNORM,
+            vk::ImageUsageFlags::SAMPLED,
+            vk::Extent3D {
+                width: SIZE as u32,
+                height: SIZE as u32,
+                depth: 1,
+            },
+            false,
+            immediate_command,
+        );
+        (
+            white_texture,
+            black_texture,
+            grey_texture,
+            error_checkerboard_texture,
+        )
     }
 
     fn init_descriptors(
@@ -350,6 +462,7 @@ impl VulkanRenderer {
         vk::DescriptorSet,
         DescriptorSetLayout,
         DescriptorAllocator,
+        DescriptorSetLayout,
         DescriptorSetLayout,
     ) {
         let ratio_sizes = vec![PoolSizeRatio {
@@ -385,11 +498,21 @@ impl VulkanRenderer {
         let scene_data_descriptor_layout =
             builder.build(device.clone(), vk::DescriptorSetLayoutCreateFlags::empty());
 
+        let mut builder = DescriptorLayoutBuilder::new();
+        builder.add_binding(
+            0,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::FRAGMENT,
+        );
+        let single_image_descriptor_layout =
+            builder.build(device.clone(), vk::DescriptorSetLayoutCreateFlags::empty());
+
         (
             draw_image_descriptor,
             draw_image_descriptor_layout,
             descriptor_allocator,
             scene_data_descriptor_layout,
+            single_image_descriptor_layout,
         )
     }
 
@@ -486,6 +609,26 @@ impl VulkanRenderer {
             0,
         );
         writer.update_descriptor_set(&self.device, descriptor_set);
+
+        let image_set = self.frame_data[self.frame_index % MAX_FRAMES_IN_FLIGHT]
+            .frame_descriptors
+            .allocate(self.single_image_descriptor_layout.layout());
+        let mut writer = DescriptorWriter::new();
+        writer.add_image(
+            0,
+            self.error_checkerboard_texture.image_view(),
+            self.default_sampler_nearest.sampler(),
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        );
+        writer.update_descriptor_set(&self.device, image_set);
+
+        self.device.cmd_bind_descriptor_sets(
+            command_buffer,
+            self.mesh_pipeline.layout(),
+            vk::PipelineBindPoint::GRAPHICS,
+            &[image_set],
+        );
         self.mesh_pipeline
             .draw(command_buffer, draw_extent, &self.test_meshes[2]);
 

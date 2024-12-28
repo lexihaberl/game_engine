@@ -298,3 +298,34 @@ impl MeshAsset {
         &self.name
     }
 }
+
+pub struct Sampler {
+    device: Arc<Device>,
+    sampler: vk::Sampler,
+}
+
+impl Sampler {
+    pub fn new(device: Arc<Device>, min_filter: vk::Filter, mag_filter: vk::Filter) -> Self {
+        let create_info = vk::SamplerCreateInfo {
+            s_type: vk::StructureType::SAMPLER_CREATE_INFO,
+            p_next: std::ptr::null(),
+            flags: vk::SamplerCreateFlags::empty(),
+            mag_filter,
+            min_filter,
+            ..Default::default()
+        };
+        let sampler = device.create_sampler(&create_info);
+        Self { device, sampler }
+    }
+
+    pub fn sampler(&self) -> vk::Sampler {
+        self.sampler
+    }
+}
+
+impl Drop for Sampler {
+    fn drop(&mut self) {
+        log::debug!("Dropping Sampler");
+        self.device.destroy_sampler(self.sampler);
+    }
+}

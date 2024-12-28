@@ -310,6 +310,7 @@ impl Device {
         format: vk::Format,
         usage_flags: vk::ImageUsageFlags,
         extent: vk::Extent3D,
+        mip_levels: u32,
     ) -> vk::Image {
         let image_create_info = vk::ImageCreateInfo {
             s_type: vk::StructureType::IMAGE_CREATE_INFO,
@@ -317,7 +318,7 @@ impl Device {
             image_type: vk::ImageType::TYPE_2D,
             format,
             extent,
-            mip_levels: 1,
+            mip_levels,
             array_layers: 1,
             samples: vk::SampleCountFlags::TYPE_1,
             tiling: vk::ImageTiling::OPTIMAL,
@@ -347,6 +348,7 @@ impl Device {
         image: vk::Image,
         format: vk::Format,
         aspect_flags: vk::ImageAspectFlags,
+        mip_levels: u32,
     ) -> vk::ImageView {
         let image_view_create_info = vk::ImageViewCreateInfo {
             s_type: vk::StructureType::IMAGE_VIEW_CREATE_INFO,
@@ -357,7 +359,7 @@ impl Device {
             subresource_range: vk::ImageSubresourceRange {
                 aspect_mask: aspect_flags,
                 base_mip_level: 0,
-                level_count: 1,
+                level_count: mip_levels,
                 base_array_layer: 0,
                 layer_count: 1,
             },
@@ -888,6 +890,25 @@ impl Device {
         }
     }
 
+    pub fn cmd_bind_descriptor_sets(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        layout: vk::PipelineLayout,
+        pipeline_bind_point: vk::PipelineBindPoint,
+        descriptor_sets: &[vk::DescriptorSet],
+    ) {
+        unsafe {
+            self.handle.cmd_bind_descriptor_sets(
+                command_buffer,
+                pipeline_bind_point,
+                layout,
+                0,
+                descriptor_sets,
+                &[],
+            );
+        }
+    }
+
     pub fn begin_rendering(
         &self,
         command_buffer: vk::CommandBuffer,
@@ -974,6 +995,39 @@ impl Device {
         unsafe {
             self.handle
                 .cmd_copy_buffer(command_buffer, src_buffer, dst_buffer, regions)
+        }
+    }
+
+    pub fn cmd_copy_buffer_to_image(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        src_buffer: vk::Buffer,
+        dst_image: vk::Image,
+        dst_image_layout: vk::ImageLayout,
+        copy_regions: &[vk::BufferImageCopy],
+    ) {
+        unsafe {
+            self.handle.cmd_copy_buffer_to_image(
+                command_buffer,
+                src_buffer,
+                dst_image,
+                dst_image_layout,
+                copy_regions,
+            );
+        }
+    }
+
+    pub fn create_sampler(&self, create_info: &vk::SamplerCreateInfo) -> vk::Sampler {
+        unsafe {
+            self.handle
+                .create_sampler(create_info, None)
+                .expect("I pray that I never run out of memory")
+        }
+    }
+
+    pub fn destroy_sampler(&self, sampler: vk::Sampler) {
+        unsafe {
+            self.handle.destroy_sampler(sampler, None);
         }
     }
 }
