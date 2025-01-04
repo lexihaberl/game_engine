@@ -24,15 +24,15 @@ impl WindowSettings {
     }
 }
 
-struct GameEngine {
+struct GameEngine<'a> {
     window: Option<Arc<Window>>,
     window_settings: WindowSettings,
     last_frame: std::time::Instant,
-    renderer: Option<VulkanRenderer>,
+    renderer: Option<VulkanRenderer<'a>>,
 }
 
-impl GameEngine {
-    fn new(window_settings: WindowSettings) -> GameEngine {
+impl<'a> GameEngine<'a> {
+    fn new(window_settings: WindowSettings) -> GameEngine<'a> {
         GameEngine {
             window: None,
             window_settings,
@@ -58,7 +58,7 @@ impl GameEngine {
     }
 }
 
-impl ApplicationHandler for GameEngine {
+impl<'a> ApplicationHandler for GameEngine<'a> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         log::info!("Setting up window and renderer");
         let window = self.init_window(event_loop);

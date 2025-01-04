@@ -33,6 +33,196 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use winit::window::Window;
 
+enum MaterialPass {
+    MainColor,
+    Transparent,
+    Other,
+}
+
+struct MaterialPipeline {
+    pipeline: GraphicsPipeline,
+    layout: vk::PipelineLayout,
+}
+
+struct MaterialInstance {
+    pipeline: Arc<MaterialPipeline>,
+    material_set: vk::DescriptorSet,
+    pass_type: MaterialPass,
+}
+
+struct MaterialResources {
+    color_image: Arc<AllocatedImage>,
+    color_sampler: Arc<Sampler>,
+    metal_rough_image: Arc<AllocatedImage>,
+    metal_rough_sampler: Arc<Sampler>,
+    data_buffer: AllocatedBuffer,
+    data_buffer_offset: u64,
+}
+
+#[derive(Copy, Clone)]
+#[repr(C)]
+// will be used for uniform buffers later on -> minimum alignment of 256 supported by most GPUS
+struct MaterialConstants {
+    color_factors: glm::Vec4,
+    metal_rough_factors: glm::Vec4,
+    // align to 256 bytes
+    extra_data: [glm::Vec4; 14],
+}
+
+struct GLTFMetallicRoughness<'a> {
+    opaque_pipeline: Arc<MaterialPipeline>,
+    transparent_pipeline: Arc<MaterialPipeline>,
+    material_layout: DescriptorSetLayout,
+    writer: DescriptorWriter<'a>,
+}
+
+impl<'a> GLTFMetallicRoughness<'a> {
+    fn build_pipeline(
+        device: Arc<Device>,
+        draw_image_format: vk::Format,
+        depth_image_format: vk::Format,
+        scene_data_descriptor_layout: vk::DescriptorSetLayout,
+    ) -> Self {
+        let frag_shader = ShaderModule::new(device.clone(), "shaders/gltf_metal_rough_frag.spv");
+        let vert_shader = ShaderModule::new(device.clone(), "shaders/gltf_metal_rough_vert.spv");
+
+        let gpu_push_constants_range = vk::PushConstantRange {
+            stage_flags: vk::ShaderStageFlags::VERTEX,
+            offset: 0,
+            size: std::mem::size_of::<GPUDrawPushConstants>() as u32,
+        };
+
+        let mut layout_builder = DescriptorLayoutBuilder::new();
+        layout_builder.add_binding(
+            0,
+            vk::DescriptorType::UNIFORM_BUFFER,
+            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+        );
+        layout_builder.add_binding(
+            1,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::FRAGMENT,
+        );
+        layout_builder.add_binding(
+            2,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::FRAGMENT,
+        );
+
+        let material_layout =
+            layout_builder.build(device.clone(), vk::DescriptorSetLayoutCreateFlags::empty());
+
+        let layouts = [scene_data_descriptor_layout, material_layout.layout()];
+
+        let layout_create_info = vk::PipelineLayoutCreateInfo {
+            s_type: vk::StructureType::PIPELINE_LAYOUT_CREATE_INFO,
+            p_next: std::ptr::null(),
+            flags: vk::PipelineLayoutCreateFlags::empty(),
+            set_layout_count: layouts.len() as u32,
+            p_set_layouts: layouts.as_ptr(),
+            push_constant_range_count: 1,
+            p_push_constant_ranges: &gpu_push_constants_range,
+            ..Default::default()
+        };
+
+        let pipeline_layout = device.create_pipeline_layout(&layout_create_info);
+
+        let opaque_pipeline = GraphicsPipelineBuilder::new()
+            .set_shaders(&frag_shader, &vert_shader)
+            .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .set_polygon_mode(vk::PolygonMode::FILL)
+            .set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE)
+            .disable_multisampling()
+            .enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL)
+            .set_color_attachment_format(draw_image_format)
+            .set_depth_format(depth_image_format)
+            .set_layout(pipeline_layout)
+            .build_pipeline(device.clone());
+
+        // #TODO: We recreate the same pipeline layout to prevent double frees => should probably
+        // fix this by redisigning the GrphicsPipelineObject (with Arc for layout?)
+        let pipeline_layout_tr = device.create_pipeline_layout(&layout_create_info);
+        let transparent_pipeline = GraphicsPipelineBuilder::new()
+            .set_shaders(&frag_shader, &vert_shader)
+            .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .set_polygon_mode(vk::PolygonMode::FILL)
+            .set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE)
+            .disable_multisampling()
+            .enable_depth_test(vk::FALSE, vk::CompareOp::GREATER_OR_EQUAL)
+            .enable_blending_additive()
+            .set_color_attachment_format(draw_image_format)
+            .set_depth_format(depth_image_format)
+            .set_layout(pipeline_layout_tr)
+            .build_pipeline(device.clone());
+
+        let writer = DescriptorWriter::new();
+        let opaque_pipeline = Arc::new(MaterialPipeline {
+            pipeline: opaque_pipeline,
+            layout: pipeline_layout,
+        });
+
+        let transparent_pipeline = Arc::new(MaterialPipeline {
+            pipeline: transparent_pipeline,
+            layout: pipeline_layout_tr,
+        });
+        Self {
+            opaque_pipeline,
+            transparent_pipeline,
+            material_layout,
+            writer,
+        }
+    }
+
+    fn clear_resources(&mut self, device: &Device) {
+        todo!()
+    }
+
+    fn write_material(
+        &mut self,
+        device: &Device,
+        pass: MaterialPass,
+        resources: &MaterialResources,
+        descriptor_allocator: &mut DescriptorAllocator,
+    ) -> MaterialInstance {
+        let pipeline = match pass {
+            MaterialPass::Transparent => self.transparent_pipeline.clone(),
+            _ => self.opaque_pipeline.clone(),
+        };
+
+        let material_set = descriptor_allocator.allocate(self.material_layout.layout());
+
+        self.writer.clear();
+        self.writer.add_buffer(
+            0,
+            resources.data_buffer.buffer(),
+            std::mem::size_of::<MaterialConstants>() as u64,
+            resources.data_buffer_offset,
+            vk::DescriptorType::UNIFORM_BUFFER,
+        );
+        self.writer.add_image(
+            1,
+            resources.color_image.image_view(),
+            resources.color_sampler.sampler(),
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        );
+        self.writer.add_image(
+            2,
+            resources.metal_rough_image.image_view(),
+            resources.metal_rough_sampler.sampler(),
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        );
+        self.writer.update_descriptor_set(device, material_set);
+
+        MaterialInstance {
+            pipeline,
+            material_set,
+            pass_type: pass,
+        }
+    }
+}
+
 pub struct FrameData {
     device: Arc<Device>,
     command_pool: vk::CommandPool,
@@ -133,7 +323,7 @@ impl Default for GPUSceneData {
 
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
-pub struct VulkanRenderer {
+pub struct VulkanRenderer<'a> {
     #[allow(dead_code)]
     allocator: Arc<Mutex<Allocator>>,
     #[allow(dead_code)]
@@ -161,17 +351,20 @@ pub struct VulkanRenderer {
     render_scale: f32,
     scene_data: GPUSceneData,
     scene_data_descriptor_layout: DescriptorSetLayout,
-    white_texture: AllocatedImage,
+    white_texture: Arc<AllocatedImage>,
     black_texture: AllocatedImage,
     grey_texture: AllocatedImage,
     error_checkerboard_texture: AllocatedImage,
-    default_sampler_linear: Sampler,
+    default_sampler_linear: Arc<Sampler>,
     default_sampler_nearest: Sampler,
     single_image_descriptor_layout: DescriptorSetLayout,
+    default_data: MaterialInstance,
+    default_data_resource: MaterialResources,
+    metal_rough_material: GLTFMetallicRoughness<'a>,
 }
 
-impl VulkanRenderer {
-    pub fn new(window: Arc<Window>) -> VulkanRenderer {
+impl<'a> VulkanRenderer<'a> {
+    pub fn new(window: Arc<Window>) -> VulkanRenderer<'a> {
         let raw_display_handle = window
             .display_handle()
             .expect("I hope window has a display handle")
@@ -255,7 +448,7 @@ impl VulkanRenderer {
         let (
             draw_image_descriptor,
             draw_image_descriptor_layout,
-            descriptor_allocator,
+            mut descriptor_allocator,
             scene_data_descriptor_layout,
             single_image_descriptor_layout,
         ) = VulkanRenderer::init_descriptors(device.clone(), &draw_image);
@@ -312,17 +505,40 @@ impl VulkanRenderer {
         )
         .unwrap();
 
-        let (white_texture, black_texture, grey_texture, error_checkerboard_texture) =
-            VulkanRenderer::init_default_textures(
-                device.clone(),
-                allocator.clone(),
-                &immediate_command_data,
-            );
-
-        let default_sampler_linear =
-            Sampler::new(device.clone(), vk::Filter::LINEAR, vk::Filter::LINEAR);
+        let default_sampler_linear = Arc::new(Sampler::new(
+            device.clone(),
+            vk::Filter::LINEAR,
+            vk::Filter::LINEAR,
+        ));
         let default_sampler_nearest =
             Sampler::new(device.clone(), vk::Filter::NEAREST, vk::Filter::NEAREST);
+
+        let (
+            white_texture,
+            black_texture,
+            grey_texture,
+            error_checkerboard_texture,
+            material_resource,
+        ) = VulkanRenderer::init_default_data(
+            device.clone(),
+            allocator.clone(),
+            &immediate_command_data,
+            default_sampler_linear.clone(),
+        );
+
+        let mut metal_rough_material = GLTFMetallicRoughness::build_pipeline(
+            device.clone(),
+            draw_image.format(),
+            depth_image.format(),
+            scene_data_descriptor_layout.layout(),
+        );
+
+        let default_data = metal_rough_material.write_material(
+            &device,
+            MaterialPass::MainColor,
+            &material_resource,
+            &mut descriptor_allocator,
+        );
 
         VulkanRenderer {
             surface,
@@ -354,6 +570,9 @@ impl VulkanRenderer {
             default_sampler_linear,
             default_sampler_nearest,
             single_image_descriptor_layout,
+            metal_rough_material,
+            default_data,
+            default_data_resource: material_resource,
         }
     }
 
@@ -367,15 +586,17 @@ impl VulkanRenderer {
         (r << 0) | (g << 8) | (b << 16) | (a << 24)
     }
 
-    fn init_default_textures(
+    fn init_default_data(
         device: Arc<Device>,
         allocator: Arc<Mutex<Allocator>>,
         immediate_command: &ImmediateCommandData,
+        default_sampler: Arc<Sampler>,
     ) -> (
+        Arc<AllocatedImage>,
         AllocatedImage,
         AllocatedImage,
         AllocatedImage,
-        AllocatedImage,
+        MaterialResources,
     ) {
         let white = Self::pack_unorm4x8([1.0, 1.0, 1.0, 1.0]);
         let white_texture = AllocatedImage::new_texture(
@@ -435,8 +656,8 @@ impl VulkanRenderer {
         }
         let error_checkerboard_texture = AllocatedImage::new_texture(
             &checkerboard,
-            device,
-            allocator,
+            device.clone(),
+            allocator.clone(),
             vk::Format::R8G8B8A8_UNORM,
             vk::ImageUsageFlags::SAMPLED,
             vk::Extent3D {
@@ -447,11 +668,39 @@ impl VulkanRenderer {
             false,
             immediate_command,
         );
+
+        let white_texture = Arc::new(white_texture);
+
+        let mut material_constants = AllocatedBuffer::new(
+            device,
+            allocator,
+            "Material Constants Uniform Buffer",
+            vk::BufferUsageFlags::UNIFORM_BUFFER,
+            std::mem::size_of::<MaterialConstants>() as u64,
+            gpu_allocator::MemoryLocation::CpuToGpu,
+        );
+        let material_data = MaterialConstants {
+            color_factors: glm::vec4(1.0, 1.0, 1.0, 1.0),
+            metal_rough_factors: glm::vec4(1.0, 0.5, 0.0, 0.0),
+            extra_data: [glm::vec4(0.0, 0.0, 0.0, 0.0); 14],
+        };
+        material_constants.copy_from_slice(&[material_data], 0);
+
+        let material_resources = MaterialResources {
+            color_image: white_texture.clone(),
+            color_sampler: default_sampler.clone(),
+            metal_rough_image: white_texture.clone(),
+            metal_rough_sampler: default_sampler.clone(),
+            data_buffer: material_constants,
+            data_buffer_offset: 0,
+        };
+
         (
             white_texture,
             black_texture,
             grey_texture,
             error_checkerboard_texture,
+            material_resources,
         )
     }
 
@@ -465,10 +714,24 @@ impl VulkanRenderer {
         DescriptorSetLayout,
         DescriptorSetLayout,
     ) {
-        let ratio_sizes = vec![PoolSizeRatio {
-            descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
-            ratio: 1.0,
-        }];
+        let ratio_sizes = vec![
+            PoolSizeRatio {
+                descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
+                ratio: 1.0,
+            },
+            PoolSizeRatio {
+                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                ratio: 3.0,
+            },
+            PoolSizeRatio {
+                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+                ratio: 3.0,
+            },
+            PoolSizeRatio {
+                descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+                ratio: 1.0,
+            },
+        ];
 
         let mut descriptor_allocator = DescriptorAllocator::new(device.clone());
         descriptor_allocator.init_pool(10, &ratio_sizes);
@@ -748,7 +1011,7 @@ impl VulkanRenderer {
     }
 }
 
-impl Drop for VulkanRenderer {
+impl<'a> Drop for VulkanRenderer<'a> {
     fn drop(&mut self) {
         log::debug!("Dropping VulkanRenderer. Waiting for device idle");
         self.device.wait_idle();
