@@ -619,12 +619,12 @@ impl<'a> VulkanRenderer<'a> {
         &mut self.frame_data[self.frame_index % MAX_FRAMES_IN_FLIGHT]
     }
 
-    pub fn draw(&mut self) {
+    pub fn draw(&mut self, view_matrix: glm::Mat4) {
         if let Some(logical_size) = self.resize_swapchain.take() {
             self.device.wait_idle();
             self.swapchain.recreate(&self.physical_device, logical_size);
         }
-        self.update_scene(self.draw_image.extent());
+        self.update_scene(self.draw_image.extent(), view_matrix);
         // MAX_IN_FLIGHT_FRAMES is 2 => we wait for the frame before the previous one to finish.
         self.device
             .wait_for_fence(&self.get_current_frame().in_flight_fence, 1_000_000_000); //1E9 ns -> 1s
@@ -690,7 +690,7 @@ impl<'a> VulkanRenderer<'a> {
             None,
         );
 
-        let scene_data = GPUSceneData::default();
+        let scene_data = self.scene_data;
         self.get_current_frame_mut()
             .gpu_scene_data_buffer
             .copy_from_slice(&[scene_data], 0);
@@ -824,13 +824,12 @@ impl<'a> VulkanRenderer<'a> {
         self.resize_swapchain = Some(logical_size);
     }
 
-    pub fn update_scene(&mut self, draw_extent: vk::Extent3D) {
+    pub fn update_scene(&mut self, draw_extent: vk::Extent3D, view_mtx: glm::Mat4) {
         self.draw_context.clear();
         self.loaded_nodes
             .get_mut("Suzanne")
             .expect("Suzanne should be loaded since we hardcoded loading those test meshes")
             .draw(&glm::identity(), &mut self.draw_context);
-        let view_mtx = glm::translate(&glm::Mat4::identity(), &glm::vec3(0., 0., -5.));
         let mut projection_mtx = glm::reversed_perspective_rh_zo(
             draw_extent.width as f32 / draw_extent.height as f32,
             70.0 * std::f32::consts::PI / 180.0,

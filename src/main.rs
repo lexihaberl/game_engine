@@ -1,4 +1,5 @@
 use game_engine::VulkanRenderer;
+use nalgebra_glm as glm;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::event::ElementState;
@@ -24,11 +25,119 @@ impl WindowSettings {
     }
 }
 
+#[derive(Debug)]
+struct Camera {
+    velocity: glm::Vec3,
+    position: glm::Vec3,
+    pitch: f32,
+    yaw: f32,
+    last_cursor_position: Option<(f64, f64)>,
+    vel_sensitivity: f32,
+    rot_sensitivity: f32,
+}
+
+impl Camera {
+    fn new() -> Self {
+        Camera {
+            velocity: glm::vec3(0.0, 0.0, 0.0),
+            position: glm::vec3(0.0, 0.0, 5.0),
+            pitch: 0.0,
+            yaw: 0.0,
+            last_cursor_position: None,
+            vel_sensitivity: 0.05,
+            rot_sensitivity: 1.0 / 400.0,
+        }
+    }
+
+    fn get_rotation_matrix(&self) -> glm::Mat4 {
+        let pitch_rotation = glm::quat_angle_axis(self.pitch, &glm::vec3(1.0, 0.0, 0.0));
+        let yaw_rotation = glm::quat_angle_axis(self.yaw, &glm::vec3(0.0, -1.0, 0.0));
+        glm::quat_to_mat4(&pitch_rotation) * glm::quat_to_mat4(&yaw_rotation)
+    }
+
+    fn get_view_matrix(&self) -> glm::Mat4 {
+        let camera_translation = glm::translate(&glm::Mat4::identity(), &self.position);
+        let camera_rotation = self.get_rotation_matrix();
+        glm::inverse(&(camera_translation * camera_rotation))
+    }
+
+    fn update(&mut self) {
+        let rot_mat = self.get_rotation_matrix();
+        let pos_vec4 = rot_mat
+            * glm::vec4(
+                self.velocity.x * self.vel_sensitivity,
+                self.velocity.y * self.vel_sensitivity,
+                self.velocity.z * self.vel_sensitivity,
+                0.0,
+            );
+        self.position += glm::vec3(pos_vec4.x, pos_vec4.y, pos_vec4.z);
+    }
+
+    fn process_event(&mut self, event: &WindowEvent) {
+        match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key: key,
+                        state: element_state,
+                        ..
+                    },
+                ..
+            } => match (key, element_state) {
+                (PhysicalKey::Code(KeyCode::KeyW), ElementState::Released) => {
+                    self.velocity.z = 0.0;
+                }
+                (PhysicalKey::Code(KeyCode::KeyW), ElementState::Pressed) => {
+                    self.velocity.z = -1.0;
+                }
+
+                (PhysicalKey::Code(KeyCode::KeyA), ElementState::Released) => {
+                    self.velocity.x = 0.0;
+                }
+                (PhysicalKey::Code(KeyCode::KeyA), ElementState::Pressed) => {
+                    self.velocity.x = -1.0;
+                }
+                (PhysicalKey::Code(KeyCode::KeyS), ElementState::Released) => {
+                    self.velocity.z = 0.0;
+                }
+
+                (PhysicalKey::Code(KeyCode::KeyS), ElementState::Pressed) => {
+                    self.velocity.z = 1.0;
+                }
+                (PhysicalKey::Code(KeyCode::KeyD), ElementState::Released) => {
+                    self.velocity.x = 0.0;
+                }
+                (PhysicalKey::Code(KeyCode::KeyD), ElementState::Pressed) => {
+                    self.velocity.x = 1.0;
+                }
+                _ => log::debug!("Something else was pressed"),
+            },
+            //TODO: use deviceevents for raw input instead
+            WindowEvent::CursorMoved { position, .. } => {
+                let (dx, dy) = match self.last_cursor_position {
+                    Some(last_position) => {
+                        let (last_x, last_y) = last_position;
+                        let dx = position.x - last_x;
+                        let dy = position.y - last_y;
+                        (dx, dy)
+                    }
+                    None => (0.0, 0.0),
+                };
+                self.last_cursor_position = Some((position.x, position.y));
+                self.yaw += dx as f32 * self.rot_sensitivity;
+                self.pitch -= dy as f32 * self.rot_sensitivity;
+            }
+            _ => (),
+        }
+    }
+}
+
 struct GameEngine<'a> {
     window: Option<Arc<Window>>,
     window_settings: WindowSettings,
     last_frame: std::time::Instant,
     renderer: Option<VulkanRenderer<'a>>,
+    camera: Camera,
 }
 
 impl<'a> GameEngine<'a> {
@@ -38,6 +147,7 @@ impl<'a> GameEngine<'a> {
             window_settings,
             last_frame: std::time::Instant::now(),
             renderer: None,
+            camera: Camera::new(),
         }
     }
 
@@ -69,6 +179,7 @@ impl<'a> ApplicationHandler for GameEngine<'a> {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         if let (Some(renderer), Some(window)) = (self.renderer.as_mut(), self.window.as_ref()) {
+            self.camera.process_event(&event);
             let mut exit = false;
             match event {
                 WindowEvent::CloseRequested => {
@@ -78,7 +189,9 @@ impl<'a> ApplicationHandler for GameEngine<'a> {
                 WindowEvent::RedrawRequested => {
                     self.last_frame = std::time::Instant::now();
                     window.pre_present_notify();
-                    renderer.draw();
+                    self.camera.update();
+
+                    renderer.draw(self.camera.get_view_matrix());
                 }
                 WindowEvent::Resized(physical_size) => {
                     let logical_size = physical_size.to_logical(window.scale_factor());
