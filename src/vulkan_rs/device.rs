@@ -1,12 +1,11 @@
 use super::instance::Instance;
 use super::instance::Version;
+use super::mesh::RenderObject;
 use super::pipelines::PushConstants;
 use super::window::Surface;
 use super::GPUDrawPushConstants;
-use super::MeshAsset;
 use ash::vk;
 use gpu_allocator::vulkan::Allocator;
-use nalgebra_glm as glm;
 use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::ffi::c_char;
@@ -896,13 +895,14 @@ impl Device {
         layout: vk::PipelineLayout,
         pipeline_bind_point: vk::PipelineBindPoint,
         descriptor_sets: &[vk::DescriptorSet],
+        set: u32,
     ) {
         unsafe {
             self.handle.cmd_bind_descriptor_sets(
                 command_buffer,
                 pipeline_bind_point,
                 layout,
-                0,
+                set,
                 descriptor_sets,
                 &[],
             );
@@ -913,18 +913,12 @@ impl Device {
         &self,
         command_buffer: vk::CommandBuffer,
         rendering_info: &vk::RenderingInfo,
-        pipeline: vk::Pipeline,
         view_port: vk::Viewport,
         scissor: vk::Rect2D,
     ) {
         unsafe {
             self.handle
                 .cmd_begin_rendering(command_buffer, rendering_info);
-            self.handle.cmd_bind_pipeline(
-                command_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                pipeline,
-            );
             self.handle
                 .cmd_set_viewport(command_buffer, 0, &[view_port]);
             self.handle.cmd_set_scissor(command_buffer, 0, &[scissor]);
@@ -937,29 +931,61 @@ impl Device {
         }
     }
 
+    pub fn cmd_bind_graphics_pipeline(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        pipeline: vk::Pipeline,
+    ) {
+        unsafe {
+            self.handle.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                pipeline,
+            );
+        }
+    }
+
     pub fn draw_mesh(
         &self,
         command_buffer: vk::CommandBuffer,
-        layout: vk::PipelineLayout,
-        draw_extent: vk::Extent2D,
-        asset: &MeshAsset,
+        descriptor_set0: vk::DescriptorSet,
+        descriptor_set1: vk::DescriptorSet,
+        render_object: &RenderObject,
     ) {
+        let index_buffer = render_object.index_buffer();
+        let index_count = render_object.index_count();
+        let first_index = render_object.first_index() as u32;
+        let world_matrix = render_object.transform();
+        let vertex_buffer_adress = render_object.vertex_buffer_address();
+        let layout = render_object.pipeline_layout();
+
         unsafe {
-            let buffer = asset.buffers();
-            let surface = asset.surfaces()[0];
-            let view_mtx = glm::translate(&glm::Mat4::identity(), &glm::vec3(0., 0., -5.));
-            let mut projection_mtx = glm::reversed_perspective_rh_zo(
-                draw_extent.width as f32 / draw_extent.height as f32,
-                70.0 * std::f32::consts::PI / 180.0,
-                0.1,
-                100.0,
+            self.handle.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                layout,
+                0,
+                &[descriptor_set0],
+                &[],
             );
-            projection_mtx[(1, 1)] *= -1.0;
-            let world_matrix = projection_mtx * view_mtx;
+            self.handle.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                layout,
+                1,
+                &[descriptor_set1],
+                &[],
+            );
+            self.handle.cmd_bind_index_buffer(
+                command_buffer,
+                index_buffer,
+                0,
+                vk::IndexType::UINT32,
+            );
 
             let push_constants = GPUDrawPushConstants {
                 world_matrix,
-                device_address: buffer.vertex_buffer_address(),
+                device_address: vertex_buffer_adress,
             };
             self.handle.cmd_push_constants(
                 command_buffer,
@@ -968,20 +994,8 @@ impl Device {
                 0,
                 push_constants.as_bytes(),
             );
-            self.handle.cmd_bind_index_buffer(
-                command_buffer,
-                buffer.index_buffer(),
-                0,
-                vk::IndexType::UINT32,
-            );
-            self.handle.cmd_draw_indexed(
-                command_buffer,
-                surface.count(),
-                1,
-                surface.start_idx() as u32,
-                0,
-                0,
-            );
+            self.handle
+                .cmd_draw_indexed(command_buffer, index_count, 1, first_index, 0, 0);
         }
     }
 

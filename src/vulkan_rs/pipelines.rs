@@ -1,6 +1,5 @@
 use super::device::Device;
 use super::shader::ShaderModule;
-use super::MeshAsset;
 use ash::vk;
 use nalgebra_glm::Vec4;
 use std::sync::Arc;
@@ -110,102 +109,9 @@ pub struct GraphicsPipeline {
 }
 
 impl GraphicsPipeline {
-    #[allow(clippy::too_many_arguments)]
-    pub fn begin_drawing(
-        &self,
-        command_buffer: vk::CommandBuffer,
-        color_image: vk::ImageView,
-        depth_image: vk::ImageView,
-        color_image_layout: vk::ImageLayout,
-        depth_image_layout: vk::ImageLayout,
-        render_extent: vk::Extent2D,
-        clear_color: Option<vk::ClearColorValue>,
-    ) {
-        let color_attachment_info = vk::RenderingAttachmentInfo {
-            s_type: vk::StructureType::RENDERING_ATTACHMENT_INFO,
-            p_next: std::ptr::null(),
-            image_view: color_image,
-            image_layout: color_image_layout,
-            load_op: if clear_color.is_some() {
-                vk::AttachmentLoadOp::CLEAR
-            } else {
-                vk::AttachmentLoadOp::LOAD
-            },
-            store_op: vk::AttachmentStoreOp::STORE,
-            clear_value: if let Some(clear_color) = clear_color {
-                vk::ClearValue { color: clear_color }
-            } else {
-                vk::ClearValue::default()
-            },
-            ..Default::default()
-        };
-
-        let depth_attachment_info = vk::RenderingAttachmentInfo {
-            s_type: vk::StructureType::RENDERING_ATTACHMENT_INFO,
-            p_next: std::ptr::null(),
-            image_view: depth_image,
-            image_layout: depth_image_layout,
-            load_op: vk::AttachmentLoadOp::CLEAR,
-            store_op: vk::AttachmentStoreOp::STORE,
-            clear_value: vk::ClearValue {
-                depth_stencil: vk::ClearDepthStencilValue {
-                    depth: 0.0,
-                    stencil: 0,
-                },
-            },
-            ..Default::default()
-        };
-
-        let rendering_info = vk::RenderingInfo {
-            s_type: vk::StructureType::RENDERING_INFO,
-            p_next: std::ptr::null(),
-            render_area: vk::Rect2D {
-                offset: vk::Offset2D { x: 0, y: 0 },
-                extent: render_extent,
-            },
-            layer_count: 1,
-            color_attachment_count: 1,
-            p_color_attachments: &color_attachment_info,
-            p_depth_attachment: &depth_attachment_info,
-            p_stencil_attachment: std::ptr::null(),
-            ..Default::default()
-        };
-
-        let view_port = vk::Viewport {
-            x: 0.0,
-            y: 0.0,
-            width: render_extent.width as f32,
-            height: render_extent.height as f32,
-            min_depth: 0.0,
-            max_depth: 1.0,
-        };
-
-        let scissor = vk::Rect2D {
-            offset: vk::Offset2D { x: 0, y: 0 },
-            extent: render_extent,
-        };
-
-        self.device.begin_rendering(
-            command_buffer,
-            &rendering_info,
-            self.pipeline,
-            view_port,
-            scissor,
-        )
-    }
-
-    pub fn end_drawing(&self, command_buffer: vk::CommandBuffer) {
-        self.device.end_rendering(command_buffer);
-    }
-
-    pub fn draw(
-        &self,
-        command_buffer: vk::CommandBuffer,
-        render_extent: vk::Extent2D,
-        mesh: &MeshAsset,
-    ) {
+    pub fn bind(&self, command_buffer: vk::CommandBuffer) {
         self.device
-            .draw_mesh(command_buffer, self.pipeline_layout, render_extent, mesh);
+            .cmd_bind_graphics_pipeline(command_buffer, self.pipeline);
     }
 
     pub fn layout(&self) -> vk::PipelineLayout {

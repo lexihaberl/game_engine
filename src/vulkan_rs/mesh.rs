@@ -1,12 +1,21 @@
 use super::allocation::AllocatedBuffer;
+use super::allocation::AllocatedImage;
 use super::allocation::Allocator;
+use super::descriptor::DescriptorAllocator;
+use super::descriptor::DescriptorLayoutBuilder;
+use super::descriptor::DescriptorSetLayout;
+use super::descriptor::DescriptorWriter;
 use super::device::Device;
 use super::immediate_submit::ImmediateCommandData;
+use super::pipelines::GraphicsPipeline;
+use super::pipelines::GraphicsPipelineBuilder;
+use super::shader::ShaderModule;
 use ash::vk;
 use nalgebra_glm as glm;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::Weak;
 
 #[repr(C)]
 #[derive(Debug, bytemuck::NoUninit, Copy, Clone)]
@@ -140,11 +149,13 @@ impl GPUDrawPushConstants {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Clone)]
 pub struct GeometricSurface {
     //idx of Surface in the buffer => we use one big buffer for whole mesh
     start_idx: usize,
     count: u32,
+    //TODO: remove Option once we implement material loading from GLTF
+    material: Arc<MaterialInstance>,
 }
 
 impl GeometricSurface {
@@ -153,6 +164,14 @@ impl GeometricSurface {
     }
     pub fn count(&self) -> u32 {
         self.count
+    }
+    pub fn material(&self) -> Arc<MaterialInstance> {
+        self.material.clone()
+    }
+
+    #[allow(dead_code)]
+    pub fn set_material(&mut self, material: Arc<MaterialInstance>) {
+        self.material = material;
     }
 }
 
@@ -170,6 +189,7 @@ impl MeshAsset {
         immediate_command_data: &ImmediateCommandData,
         file_path: &Path,
         overwrite_color_with_normals: bool,
+        default_material: Option<Arc<MaterialInstance>>,
     ) -> Result<Vec<Self>, gltf::Error> {
         log::info!("Loading GLTF from file: {:?}", file_path);
 
@@ -201,7 +221,19 @@ impl MeshAsset {
                         indices.push(index + initial_vtx as u32);
                     }
                 }
-                surfaces.push(GeometricSurface { start_idx, count });
+                if let Some(default_material) = default_material.as_ref() {
+                    let material = default_material.clone();
+                    let surface = GeometricSurface {
+                        start_idx,
+                        count,
+                        material,
+                    };
+                    surfaces.push(surface);
+                } else {
+                    todo!(
+                        "No default material provided and material loading is not yet implemented"
+                    );
+                }
 
                 match reader.read_positions() {
                     Some(iter) => {
@@ -293,7 +325,6 @@ impl MeshAsset {
         &self.surfaces
     }
 
-    #[allow(dead_code)]
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -327,5 +358,343 @@ impl Drop for Sampler {
     fn drop(&mut self) {
         log::debug!("Dropping Sampler");
         self.device.destroy_sampler(self.sampler);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum MaterialPass {
+    MainColor,
+    Transparent,
+    Other,
+}
+
+pub struct MaterialPipeline {
+    pipeline: GraphicsPipeline,
+    layout: vk::PipelineLayout,
+}
+
+pub struct MaterialInstance {
+    pipeline: Arc<MaterialPipeline>,
+    material_set: vk::DescriptorSet,
+    pass_type: MaterialPass,
+}
+impl MaterialInstance {
+    pub fn bind_pipeline(&self, command_buffer: vk::CommandBuffer) {
+        self.pipeline.pipeline.bind(command_buffer);
+    }
+}
+
+impl Clone for MaterialInstance {
+    fn clone(&self) -> Self {
+        MaterialInstance {
+            pipeline: self.pipeline.clone(),
+            material_set: self.material_set,
+            pass_type: self.pass_type,
+        }
+    }
+}
+
+pub struct MaterialResources {
+    pub color_image: Arc<AllocatedImage>,
+    pub color_sampler: Arc<Sampler>,
+    pub metal_rough_image: Arc<AllocatedImage>,
+    pub metal_rough_sampler: Arc<Sampler>,
+    pub data_buffer: AllocatedBuffer,
+    pub data_buffer_offset: u64,
+}
+
+#[derive(Copy, Clone)]
+#[repr(C)]
+// will be used for uniform buffers later on -> minimum alignment of 256 supported by most GPUS
+pub struct MaterialConstants {
+    pub color_factors: glm::Vec4,
+    pub metal_rough_factors: glm::Vec4,
+    // align to 256 bytes
+    pub extra_data: [glm::Vec4; 14],
+}
+
+pub struct GLTFMetallicRoughness<'a> {
+    opaque_pipeline: Arc<MaterialPipeline>,
+    transparent_pipeline: Arc<MaterialPipeline>,
+    material_layout: DescriptorSetLayout,
+    writer: DescriptorWriter<'a>,
+}
+
+impl<'a> GLTFMetallicRoughness<'a> {
+    pub fn build_pipeline(
+        device: Arc<Device>,
+        draw_image_format: vk::Format,
+        depth_image_format: vk::Format,
+        scene_data_descriptor_layout: vk::DescriptorSetLayout,
+    ) -> Self {
+        let frag_shader = ShaderModule::new(device.clone(), "shaders/gltf_metal_rough_frag.spv");
+        let vert_shader = ShaderModule::new(device.clone(), "shaders/gltf_metal_rough_vert.spv");
+
+        let gpu_push_constants_range = vk::PushConstantRange {
+            stage_flags: vk::ShaderStageFlags::VERTEX,
+            offset: 0,
+            size: std::mem::size_of::<GPUDrawPushConstants>() as u32,
+        };
+
+        let mut layout_builder = DescriptorLayoutBuilder::new();
+        layout_builder.add_binding(
+            0,
+            vk::DescriptorType::UNIFORM_BUFFER,
+            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+        );
+        layout_builder.add_binding(
+            1,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::FRAGMENT,
+        );
+        layout_builder.add_binding(
+            2,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::FRAGMENT,
+        );
+
+        let material_layout =
+            layout_builder.build(device.clone(), vk::DescriptorSetLayoutCreateFlags::empty());
+
+        let layouts = [scene_data_descriptor_layout, material_layout.layout()];
+
+        let layout_create_info = vk::PipelineLayoutCreateInfo {
+            s_type: vk::StructureType::PIPELINE_LAYOUT_CREATE_INFO,
+            p_next: std::ptr::null(),
+            flags: vk::PipelineLayoutCreateFlags::empty(),
+            set_layout_count: layouts.len() as u32,
+            p_set_layouts: layouts.as_ptr(),
+            push_constant_range_count: 1,
+            p_push_constant_ranges: &gpu_push_constants_range,
+            ..Default::default()
+        };
+
+        let pipeline_layout = device.create_pipeline_layout(&layout_create_info);
+
+        let opaque_pipeline = GraphicsPipelineBuilder::new()
+            .set_shaders(&frag_shader, &vert_shader)
+            .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .set_polygon_mode(vk::PolygonMode::FILL)
+            .set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE)
+            .disable_multisampling()
+            .enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL)
+            .set_color_attachment_format(draw_image_format)
+            .set_depth_format(depth_image_format)
+            .set_layout(pipeline_layout)
+            .build_pipeline(device.clone());
+
+        // #TODO: We recreate the same pipeline layout to prevent double frees => should probably
+        // fix this by redisigning the GrphicsPipelineObject (with Arc for layout?)
+        let pipeline_layout_tr = device.create_pipeline_layout(&layout_create_info);
+        let transparent_pipeline = GraphicsPipelineBuilder::new()
+            .set_shaders(&frag_shader, &vert_shader)
+            .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .set_polygon_mode(vk::PolygonMode::FILL)
+            .set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE)
+            .disable_multisampling()
+            .enable_depth_test(vk::FALSE, vk::CompareOp::GREATER_OR_EQUAL)
+            .enable_blending_additive()
+            .set_color_attachment_format(draw_image_format)
+            .set_depth_format(depth_image_format)
+            .set_layout(pipeline_layout_tr)
+            .build_pipeline(device.clone());
+
+        let writer = DescriptorWriter::new();
+        let opaque_pipeline = Arc::new(MaterialPipeline {
+            pipeline: opaque_pipeline,
+            layout: pipeline_layout,
+        });
+
+        let transparent_pipeline = Arc::new(MaterialPipeline {
+            pipeline: transparent_pipeline,
+            layout: pipeline_layout_tr,
+        });
+        Self {
+            opaque_pipeline,
+            transparent_pipeline,
+            material_layout,
+            writer,
+        }
+    }
+
+    fn clear_resources(&mut self, device: &Device) {
+        todo!()
+    }
+
+    pub fn write_material(
+        &mut self,
+        device: &Device,
+        pass: MaterialPass,
+        resources: &MaterialResources,
+        descriptor_allocator: &mut DescriptorAllocator,
+    ) -> MaterialInstance {
+        let pipeline = match pass {
+            MaterialPass::Transparent => self.transparent_pipeline.clone(),
+            _ => self.opaque_pipeline.clone(),
+        };
+
+        let material_set = descriptor_allocator.allocate(self.material_layout.layout());
+
+        self.writer.clear();
+        self.writer.add_buffer(
+            0,
+            resources.data_buffer.buffer(),
+            std::mem::size_of::<MaterialConstants>() as u64,
+            resources.data_buffer_offset,
+            vk::DescriptorType::UNIFORM_BUFFER,
+        );
+        self.writer.add_image(
+            1,
+            resources.color_image.image_view(),
+            resources.color_sampler.sampler(),
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        );
+        self.writer.add_image(
+            2,
+            resources.metal_rough_image.image_view(),
+            resources.metal_rough_sampler.sampler(),
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        );
+        self.writer.update_descriptor_set(device, material_set);
+
+        MaterialInstance {
+            pipeline,
+            material_set,
+            pass_type: pass,
+        }
+    }
+}
+
+pub struct DrawContext {
+    opaque_surfaces: Vec<RenderObject>,
+}
+
+impl DrawContext {
+    pub fn new() -> Self {
+        Self {
+            opaque_surfaces: Vec::new(),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.opaque_surfaces.clear();
+    }
+
+    pub fn objects(&self) -> &Vec<RenderObject> {
+        &self.opaque_surfaces
+    }
+}
+
+pub struct RenderObject {
+    index_count: u32,
+    first_index: usize,
+    index_buffer: vk::Buffer,
+    material: Arc<MaterialInstance>,
+    transform: glm::Mat4,
+    vertex_buffer_address: vk::DeviceAddress,
+}
+
+impl RenderObject {
+    pub fn draw(
+        &self,
+        device: &Device,
+        command_buffer: vk::CommandBuffer,
+        descriptor_set0: vk::DescriptorSet,
+    ) {
+        let descriptor_set1 = self.material.material_set;
+        self.bind_pipeline(command_buffer);
+        device.draw_mesh(command_buffer, descriptor_set0, descriptor_set1, self);
+    }
+
+    pub fn bind_pipeline(&self, command_buffer: vk::CommandBuffer) {
+        self.material.bind_pipeline(command_buffer);
+    }
+
+    pub fn pipeline_layout(&self) -> vk::PipelineLayout {
+        self.material.pipeline.layout
+    }
+
+    pub fn transform(&self) -> glm::Mat4 {
+        self.transform
+    }
+
+    pub fn vertex_buffer_address(&self) -> vk::DeviceAddress {
+        self.vertex_buffer_address
+    }
+
+    pub fn index_count(&self) -> u32 {
+        self.index_count
+    }
+
+    pub fn first_index(&self) -> usize {
+        self.first_index
+    }
+    pub fn index_buffer(&self) -> vk::Buffer {
+        self.index_buffer
+    }
+}
+
+pub trait Rendereable {
+    fn draw(&self, top_matrix: &glm::Mat4, ctx: &mut DrawContext);
+}
+
+pub struct MeshNode {
+    children: Vec<Arc<Mutex<MeshNode>>>,
+    parent: Option<Weak<MeshNode>>,
+    local_transform: glm::Mat4,
+    world_transform: glm::Mat4,
+    mesh: MeshAsset,
+}
+
+impl MeshNode {
+    pub fn new(mesh: MeshAsset, local_transform: glm::Mat4, world_transform: glm::Mat4) -> Self {
+        Self {
+            children: Vec::new(),
+            parent: None,
+            local_transform,
+            world_transform,
+            mesh,
+        }
+    }
+
+    pub fn refresh_transform(&mut self, parent_matrix: &glm::Mat4) {
+        self.world_transform = parent_matrix * self.local_transform;
+        for child in &self.children {
+            child
+                .lock()
+                .expect("Pls no poiserino")
+                .refresh_transform(&self.world_transform);
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        self.mesh.name()
+    }
+}
+
+impl Rendereable for MeshNode {
+    fn draw(&self, top_matrix: &glm::Mat4, ctx: &mut DrawContext) {
+        let node_matrix = top_matrix * self.world_transform;
+        let index_buffer = self.mesh.buffers().index_buffer();
+        let vertex_buffer_address = self.mesh.buffers().vertex_buffer_address();
+        for surface in self.mesh.surfaces() {
+            let render_obj = RenderObject {
+                index_count: surface.count(),
+                first_index: surface.start_idx(),
+                index_buffer,
+                material: surface.material().clone(),
+                transform: node_matrix,
+                vertex_buffer_address,
+            };
+            ctx.opaque_surfaces.push(render_obj);
+        }
+        for child in &self.children {
+            child
+                .lock()
+                .expect("Pls no poiserino")
+                .draw(top_matrix, ctx);
+        }
     }
 }

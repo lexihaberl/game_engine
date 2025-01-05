@@ -11,15 +11,23 @@ use crate::vulkan_rs::DescriptorLayoutBuilder;
 use crate::vulkan_rs::DescriptorSetLayout;
 use crate::vulkan_rs::DescriptorWriter;
 use crate::vulkan_rs::Device;
+use crate::vulkan_rs::DrawContext;
 use crate::vulkan_rs::EngineInfo;
+use crate::vulkan_rs::GLTFMetallicRoughness;
 use crate::vulkan_rs::GPUDrawPushConstants;
 use crate::vulkan_rs::GraphicsPipeline;
 use crate::vulkan_rs::GraphicsPipelineBuilder;
 use crate::vulkan_rs::ImmediateCommandData;
 use crate::vulkan_rs::Instance;
+use crate::vulkan_rs::MaterialConstants;
+use crate::vulkan_rs::MaterialInstance;
+use crate::vulkan_rs::MaterialPass;
+use crate::vulkan_rs::MaterialResources;
 use crate::vulkan_rs::MeshAsset;
+use crate::vulkan_rs::MeshNode;
 use crate::vulkan_rs::PhysicalDeviceSelector;
 use crate::vulkan_rs::PoolSizeRatio;
+use crate::vulkan_rs::Rendereable;
 use crate::vulkan_rs::Sampler;
 use crate::vulkan_rs::ShaderModule;
 use crate::vulkan_rs::Surface;
@@ -28,200 +36,11 @@ use crate::vulkan_rs::Version;
 use ash::vk;
 use nalgebra_glm as glm;
 use raw_window_handle::HasDisplayHandle;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use winit::window::Window;
-
-enum MaterialPass {
-    MainColor,
-    Transparent,
-    Other,
-}
-
-struct MaterialPipeline {
-    pipeline: GraphicsPipeline,
-    layout: vk::PipelineLayout,
-}
-
-struct MaterialInstance {
-    pipeline: Arc<MaterialPipeline>,
-    material_set: vk::DescriptorSet,
-    pass_type: MaterialPass,
-}
-
-struct MaterialResources {
-    color_image: Arc<AllocatedImage>,
-    color_sampler: Arc<Sampler>,
-    metal_rough_image: Arc<AllocatedImage>,
-    metal_rough_sampler: Arc<Sampler>,
-    data_buffer: AllocatedBuffer,
-    data_buffer_offset: u64,
-}
-
-#[derive(Copy, Clone)]
-#[repr(C)]
-// will be used for uniform buffers later on -> minimum alignment of 256 supported by most GPUS
-struct MaterialConstants {
-    color_factors: glm::Vec4,
-    metal_rough_factors: glm::Vec4,
-    // align to 256 bytes
-    extra_data: [glm::Vec4; 14],
-}
-
-struct GLTFMetallicRoughness<'a> {
-    opaque_pipeline: Arc<MaterialPipeline>,
-    transparent_pipeline: Arc<MaterialPipeline>,
-    material_layout: DescriptorSetLayout,
-    writer: DescriptorWriter<'a>,
-}
-
-impl<'a> GLTFMetallicRoughness<'a> {
-    fn build_pipeline(
-        device: Arc<Device>,
-        draw_image_format: vk::Format,
-        depth_image_format: vk::Format,
-        scene_data_descriptor_layout: vk::DescriptorSetLayout,
-    ) -> Self {
-        let frag_shader = ShaderModule::new(device.clone(), "shaders/gltf_metal_rough_frag.spv");
-        let vert_shader = ShaderModule::new(device.clone(), "shaders/gltf_metal_rough_vert.spv");
-
-        let gpu_push_constants_range = vk::PushConstantRange {
-            stage_flags: vk::ShaderStageFlags::VERTEX,
-            offset: 0,
-            size: std::mem::size_of::<GPUDrawPushConstants>() as u32,
-        };
-
-        let mut layout_builder = DescriptorLayoutBuilder::new();
-        layout_builder.add_binding(
-            0,
-            vk::DescriptorType::UNIFORM_BUFFER,
-            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-        );
-        layout_builder.add_binding(
-            1,
-            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-            vk::ShaderStageFlags::FRAGMENT,
-        );
-        layout_builder.add_binding(
-            2,
-            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-            vk::ShaderStageFlags::FRAGMENT,
-        );
-
-        let material_layout =
-            layout_builder.build(device.clone(), vk::DescriptorSetLayoutCreateFlags::empty());
-
-        let layouts = [scene_data_descriptor_layout, material_layout.layout()];
-
-        let layout_create_info = vk::PipelineLayoutCreateInfo {
-            s_type: vk::StructureType::PIPELINE_LAYOUT_CREATE_INFO,
-            p_next: std::ptr::null(),
-            flags: vk::PipelineLayoutCreateFlags::empty(),
-            set_layout_count: layouts.len() as u32,
-            p_set_layouts: layouts.as_ptr(),
-            push_constant_range_count: 1,
-            p_push_constant_ranges: &gpu_push_constants_range,
-            ..Default::default()
-        };
-
-        let pipeline_layout = device.create_pipeline_layout(&layout_create_info);
-
-        let opaque_pipeline = GraphicsPipelineBuilder::new()
-            .set_shaders(&frag_shader, &vert_shader)
-            .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-            .set_polygon_mode(vk::PolygonMode::FILL)
-            .set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE)
-            .disable_multisampling()
-            .enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL)
-            .set_color_attachment_format(draw_image_format)
-            .set_depth_format(depth_image_format)
-            .set_layout(pipeline_layout)
-            .build_pipeline(device.clone());
-
-        // #TODO: We recreate the same pipeline layout to prevent double frees => should probably
-        // fix this by redisigning the GrphicsPipelineObject (with Arc for layout?)
-        let pipeline_layout_tr = device.create_pipeline_layout(&layout_create_info);
-        let transparent_pipeline = GraphicsPipelineBuilder::new()
-            .set_shaders(&frag_shader, &vert_shader)
-            .set_input_topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-            .set_polygon_mode(vk::PolygonMode::FILL)
-            .set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE)
-            .disable_multisampling()
-            .enable_depth_test(vk::FALSE, vk::CompareOp::GREATER_OR_EQUAL)
-            .enable_blending_additive()
-            .set_color_attachment_format(draw_image_format)
-            .set_depth_format(depth_image_format)
-            .set_layout(pipeline_layout_tr)
-            .build_pipeline(device.clone());
-
-        let writer = DescriptorWriter::new();
-        let opaque_pipeline = Arc::new(MaterialPipeline {
-            pipeline: opaque_pipeline,
-            layout: pipeline_layout,
-        });
-
-        let transparent_pipeline = Arc::new(MaterialPipeline {
-            pipeline: transparent_pipeline,
-            layout: pipeline_layout_tr,
-        });
-        Self {
-            opaque_pipeline,
-            transparent_pipeline,
-            material_layout,
-            writer,
-        }
-    }
-
-    fn clear_resources(&mut self, device: &Device) {
-        todo!()
-    }
-
-    fn write_material(
-        &mut self,
-        device: &Device,
-        pass: MaterialPass,
-        resources: &MaterialResources,
-        descriptor_allocator: &mut DescriptorAllocator,
-    ) -> MaterialInstance {
-        let pipeline = match pass {
-            MaterialPass::Transparent => self.transparent_pipeline.clone(),
-            _ => self.opaque_pipeline.clone(),
-        };
-
-        let material_set = descriptor_allocator.allocate(self.material_layout.layout());
-
-        self.writer.clear();
-        self.writer.add_buffer(
-            0,
-            resources.data_buffer.buffer(),
-            std::mem::size_of::<MaterialConstants>() as u64,
-            resources.data_buffer_offset,
-            vk::DescriptorType::UNIFORM_BUFFER,
-        );
-        self.writer.add_image(
-            1,
-            resources.color_image.image_view(),
-            resources.color_sampler.sampler(),
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-        );
-        self.writer.add_image(
-            2,
-            resources.metal_rough_image.image_view(),
-            resources.metal_rough_sampler.sampler(),
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-        );
-        self.writer.update_descriptor_set(device, material_set);
-
-        MaterialInstance {
-            pipeline,
-            material_set,
-            pass_type: pass,
-        }
-    }
-}
 
 pub struct FrameData {
     device: Arc<Device>,
@@ -346,7 +165,6 @@ pub struct VulkanRenderer<'a> {
     gradient_pipeline: ComputePipeline,
     immediate_command_data: ImmediateCommandData,
     mesh_pipeline: GraphicsPipeline,
-    test_meshes: Vec<MeshAsset>,
     resize_swapchain: Option<winit::dpi::LogicalSize<u32>>,
     render_scale: f32,
     scene_data: GPUSceneData,
@@ -358,9 +176,11 @@ pub struct VulkanRenderer<'a> {
     default_sampler_linear: Arc<Sampler>,
     default_sampler_nearest: Sampler,
     single_image_descriptor_layout: DescriptorSetLayout,
-    default_data: MaterialInstance,
+    default_data: Arc<MaterialInstance>,
     default_data_resource: MaterialResources,
     metal_rough_material: GLTFMetallicRoughness<'a>,
+    draw_context: DrawContext,
+    loaded_nodes: HashMap<String, Arc<MeshNode>>,
 }
 
 impl<'a> VulkanRenderer<'a> {
@@ -496,15 +316,6 @@ impl<'a> VulkanRenderer<'a> {
 
         let immediate_command_data = ImmediateCommandData::new(device.clone());
 
-        let test_meshes = MeshAsset::load_gltf(
-            device.clone(),
-            allocator.clone(),
-            &immediate_command_data,
-            Path::new("./assets/basicmesh.glb"),
-            true,
-        )
-        .unwrap();
-
         let default_sampler_linear = Arc::new(Sampler::new(
             device.clone(),
             vk::Filter::LINEAR,
@@ -533,12 +344,32 @@ impl<'a> VulkanRenderer<'a> {
             scene_data_descriptor_layout.layout(),
         );
 
-        let default_data = metal_rough_material.write_material(
+        let default_data = Arc::new(metal_rough_material.write_material(
             &device,
             MaterialPass::MainColor,
             &material_resource,
             &mut descriptor_allocator,
-        );
+        ));
+
+        let test_meshes = MeshAsset::load_gltf(
+            device.clone(),
+            allocator.clone(),
+            &immediate_command_data,
+            Path::new("./assets/basicmesh.glb"),
+            true,
+            Some(default_data.clone()),
+        )
+        .unwrap();
+        let mut loaded_nodes = HashMap::new();
+        for mesh in test_meshes.into_iter() {
+            let local_transform = glm::identity();
+            let world_transform = glm::identity();
+
+            let new_node = MeshNode::new(mesh, local_transform, world_transform);
+            loaded_nodes.insert(new_node.name().to_string(), Arc::new(new_node));
+        }
+
+        let draw_context = DrawContext::new();
 
         VulkanRenderer {
             surface,
@@ -558,7 +389,6 @@ impl<'a> VulkanRenderer<'a> {
             gradient_pipeline,
             immediate_command_data,
             mesh_pipeline,
-            test_meshes,
             resize_swapchain: None,
             render_scale: 1.0,
             scene_data_descriptor_layout,
@@ -573,6 +403,8 @@ impl<'a> VulkanRenderer<'a> {
             metal_rough_material,
             default_data,
             default_data_resource: material_resource,
+            loaded_nodes,
+            draw_context,
         }
     }
 
@@ -792,6 +624,7 @@ impl<'a> VulkanRenderer<'a> {
             self.device.wait_idle();
             self.swapchain.recreate(&self.physical_device, logical_size);
         }
+        self.update_scene(self.draw_image.extent());
         // MAX_IN_FLIGHT_FRAMES is 2 => we wait for the frame before the previous one to finish.
         self.device
             .wait_for_fence(&self.get_current_frame().in_flight_fence, 1_000_000_000); //1E9 ns -> 1s
@@ -847,7 +680,7 @@ impl<'a> VulkanRenderer<'a> {
             vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
         );
 
-        self.mesh_pipeline.begin_drawing(
+        self.begin_drawing(
             command_buffer,
             draw_image_view,
             self.depth_image.image_view(),
@@ -873,29 +706,10 @@ impl<'a> VulkanRenderer<'a> {
         );
         writer.update_descriptor_set(&self.device, descriptor_set);
 
-        let image_set = self.frame_data[self.frame_index % MAX_FRAMES_IN_FLIGHT]
-            .frame_descriptors
-            .allocate(self.single_image_descriptor_layout.layout());
-        let mut writer = DescriptorWriter::new();
-        writer.add_image(
-            0,
-            self.error_checkerboard_texture.image_view(),
-            self.default_sampler_nearest.sampler(),
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-        );
-        writer.update_descriptor_set(&self.device, image_set);
-
-        self.device.cmd_bind_descriptor_sets(
-            command_buffer,
-            self.mesh_pipeline.layout(),
-            vk::PipelineBindPoint::GRAPHICS,
-            &[image_set],
-        );
-        self.mesh_pipeline
-            .draw(command_buffer, draw_extent, &self.test_meshes[2]);
-
-        self.mesh_pipeline.end_drawing(command_buffer);
+        for render_object in self.draw_context.objects() {
+            render_object.draw(&self.device, command_buffer, descriptor_set);
+        }
+        self.end_drawing(command_buffer);
 
         self.device.transition_image_layout(
             command_buffer,
@@ -1008,6 +822,118 @@ impl<'a> VulkanRenderer<'a> {
 
     pub fn resize_swapchain(&mut self, logical_size: winit::dpi::LogicalSize<u32>) {
         self.resize_swapchain = Some(logical_size);
+    }
+
+    pub fn update_scene(&mut self, draw_extent: vk::Extent3D) {
+        self.draw_context.clear();
+        self.loaded_nodes
+            .get_mut("Suzanne")
+            .expect("Suzanne should be loaded since we hardcoded loading those test meshes")
+            .draw(&glm::identity(), &mut self.draw_context);
+        let view_mtx = glm::translate(&glm::Mat4::identity(), &glm::vec3(0., 0., -5.));
+        let mut projection_mtx = glm::reversed_perspective_rh_zo(
+            draw_extent.width as f32 / draw_extent.height as f32,
+            70.0 * std::f32::consts::PI / 180.0,
+            0.1,
+            100.0,
+        );
+        projection_mtx[(1, 1)] *= -1.0;
+        let view_proj = projection_mtx * view_mtx;
+        let ambient_color = glm::vec4(0.1, 0.1, 0.1, 0.1);
+        let sunlight_color = glm::vec4(1.0, 1.0, 1.0, 1.0);
+        let sunlight_dir = glm::vec4(0.0, 1.0, 0.5, 1.0);
+        let scene_data = GPUSceneData {
+            view: view_mtx,
+            proj: projection_mtx,
+            view_proj,
+            ambient_color,
+            sunlight_color,
+            sunlight_dir,
+        };
+        self.scene_data = scene_data;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn begin_drawing(
+        &self,
+        command_buffer: vk::CommandBuffer,
+        color_image: vk::ImageView,
+        depth_image: vk::ImageView,
+        color_image_layout: vk::ImageLayout,
+        depth_image_layout: vk::ImageLayout,
+        render_extent: vk::Extent2D,
+        clear_color: Option<vk::ClearColorValue>,
+    ) {
+        let color_attachment_info = vk::RenderingAttachmentInfo {
+            s_type: vk::StructureType::RENDERING_ATTACHMENT_INFO,
+            p_next: std::ptr::null(),
+            image_view: color_image,
+            image_layout: color_image_layout,
+            load_op: if clear_color.is_some() {
+                vk::AttachmentLoadOp::CLEAR
+            } else {
+                vk::AttachmentLoadOp::LOAD
+            },
+            store_op: vk::AttachmentStoreOp::STORE,
+            clear_value: if let Some(clear_color) = clear_color {
+                vk::ClearValue { color: clear_color }
+            } else {
+                vk::ClearValue::default()
+            },
+            ..Default::default()
+        };
+
+        let depth_attachment_info = vk::RenderingAttachmentInfo {
+            s_type: vk::StructureType::RENDERING_ATTACHMENT_INFO,
+            p_next: std::ptr::null(),
+            image_view: depth_image,
+            image_layout: depth_image_layout,
+            load_op: vk::AttachmentLoadOp::CLEAR,
+            store_op: vk::AttachmentStoreOp::STORE,
+            clear_value: vk::ClearValue {
+                depth_stencil: vk::ClearDepthStencilValue {
+                    depth: 0.0,
+                    stencil: 0,
+                },
+            },
+            ..Default::default()
+        };
+
+        let rendering_info = vk::RenderingInfo {
+            s_type: vk::StructureType::RENDERING_INFO,
+            p_next: std::ptr::null(),
+            render_area: vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: render_extent,
+            },
+            layer_count: 1,
+            color_attachment_count: 1,
+            p_color_attachments: &color_attachment_info,
+            p_depth_attachment: &depth_attachment_info,
+            p_stencil_attachment: std::ptr::null(),
+            ..Default::default()
+        };
+
+        let view_port = vk::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: render_extent.width as f32,
+            height: render_extent.height as f32,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        };
+
+        let scissor = vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: render_extent,
+        };
+
+        self.device
+            .begin_rendering(command_buffer, &rendering_info, view_port, scissor)
+    }
+
+    pub fn end_drawing(&self, command_buffer: vk::CommandBuffer) {
+        self.device.end_rendering(command_buffer);
     }
 }
 
