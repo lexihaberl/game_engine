@@ -356,7 +356,7 @@ impl<'a> VulkanRenderer<'a> {
             allocator.clone(),
             &immediate_command_data,
             Path::new("./assets/basicmesh.glb"),
-            true,
+            false,
             Some(default_data.clone()),
         )
         .unwrap();
@@ -850,6 +850,14 @@ impl<'a> VulkanRenderer<'a> {
             sunlight_color,
             sunlight_dir,
         };
+        for i in -3..4 {
+            let scale = glm::scale(&glm::identity(), &glm::vec3(0.2, 0.2, 0.2));
+            let translation = glm::translate(&glm::identity(), &glm::vec3(i as f32, 1.0, 0.0));
+            self.loaded_nodes
+                .get_mut("Cube")
+                .expect("Cubes should be loaded since we hardcoaded loading those test meshes")
+                .draw(&(translation * scale), &mut self.draw_context);
+        }
         self.scene_data = scene_data;
     }
 

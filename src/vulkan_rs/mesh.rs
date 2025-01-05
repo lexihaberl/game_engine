@@ -478,6 +478,7 @@ impl<'a> GLTFMetallicRoughness<'a> {
             .set_cull_mode(vk::CullModeFlags::NONE, vk::FrontFace::CLOCKWISE)
             .disable_multisampling()
             .enable_depth_test(vk::TRUE, vk::CompareOp::GREATER_OR_EQUAL)
+            .disable_blending()
             .set_color_attachment_format(draw_image_format)
             .set_depth_format(depth_image_format)
             .set_layout(pipeline_layout)
